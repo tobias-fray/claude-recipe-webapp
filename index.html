@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Recipes">
+<meta name="theme-color" content="#E85D3A">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<title>Recipe Book</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --c-bg: #FAF7F4; --c-card: #FFFFFF; --c-primary: #E85D3A;
+  --c-primary-light: #FF8A65; --c-text: #2D2018; --c-text2: #8C7B6B;
+  --c-border: #EDE8E2; --c-green: #2E7D32; --c-green-bg: #E8F5E9;
+  --c-orange-bg: #FFF3E0; --c-orange: #E65100; --c-blue: #1565C0;
+  --c-yellow: #F9A825; --c-red-bg: #FFEBEE;
+  --sans: 'DM Sans', -apple-system, sans-serif;
+  --serif: 'DM Serif Display', Georgia, serif;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+html, body, #root { height: 100%; }
+body {
+  font-family: var(--sans); background: var(--c-bg); color: var(--c-text);
+  -webkit-font-smoothing: antialiased; overflow: hidden;
+}
+input, textarea, select, button { font-family: inherit; font-size: inherit; }
+button { cursor: pointer; border: none; background: none; }
+a { color: inherit; text-decoration: none; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 0; height: 0; }
+
+/* Animations */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes fadeOverlay { from { opacity: 0; } to { opacity: 1; } }
+.fade-in { animation: fadeIn 0.3s ease both; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef, useMemo, createContext, useContext } = React;
+
+// ─── IndexedDB Database ───────────────────────────────────────
+const DB_NAME = 'RecipeBookDB';
+const DB_VERSION = 1;
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('genres')) {
+        db.createObjectStore('genres', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('recipes')) {
+        const store = db.createObjectStore('recipes', { keyPath: 'id' });
+        store.createIndex('genreId', 'genreId', { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbGetAll(storeName) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const req = tx.objectStore(storeName).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbPut(storeName, item) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    tx.objectStore(storeName).put(item);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function dbDelete(storeName, id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    tx.objectStore(storeName).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ─── Utility ──────────────────────────────────────────────────
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+function extractYoutubeId(url) {
+  if (!url) return null;
+  const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+function ytThumb(url) {
+  const id = extractYoutubeId(url);
+  return id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : null;
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.readAsDataURL(file);
+  });
+}
+
+// ─── Data Context ─────────────────────────────────────────────
+const DataCtx = createContext();
+
+function DataProvider({ children }) {
+  const [genres, setGenres] = useState([]);
+  const [recipes, setRecipes] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+
+  const reload = useCallback(async () => {
+    const [g, r] = await Promise.all([dbGetAll('genres'), dbGetAll('recipes')]);
+    g.sort((a, b) => a.name.localeCompare(b.name));
+    r.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    setGenres(g);
+    setRecipes(r);
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  const saveGenre = async (g) => { await dbPut('genres', g); await reload(); };
+  const deleteGenre = async (id) => {
+    // unassign recipes
+    const all = await dbGetAll('recipes');
+    for (const r of all) {
+      if (r.genreId === id) { r.genreId = null; await dbPut('recipes', r); }
+    }
+    await dbDelete('genres', id);
+    await reload();
+  };
+  const saveRecipe = async (r) => { r.updatedAt = Date.now(); await dbPut('recipes', r); await reload(); };
+  const deleteRecipe = async (id) => { await dbDelete('recipes', id); await reload(); };
+  const duplicateRecipe = async (r) => {
+    const dup = { ...r, id: uid(), name: r.name + ' (Copy)', createdAt: Date.now(), updatedAt: Date.now() };
+    await dbPut('recipes', dup);
+    await reload();
+    return dup;
+  };
+
+  const exportData = async () => {
+    const data = { genres, recipes, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'recipes-backup.json'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importData = async (file) => {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (data.genres) for (const g of data.genres) await dbPut('genres', g);
+    if (data.recipes) for (const r of data.recipes) await dbPut('recipes', r);
+    await reload();
+  };
+
+  return (
+    <DataCtx.Provider value={{ genres, recipes, loaded, saveGenre, deleteGenre, saveRecipe, deleteRecipe, duplicateRecipe, reload, exportData, importData }}>
+      {children}
+    </DataCtx.Provider>
+  );
+}
+
+const useData = () => useContext(DataCtx);
+
+// ─── Icons (inline SVG) ──────────────────────────────────────
+const Icon = ({ name, size = 22, color = 'currentColor' }) => {
+  const paths = {
+    folder: <><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></>,
+    grid: <><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></>,
+    plus: <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
+    back: <><polyline points="15 18 9 12 15 6"/></>,
+    search: <><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></>,
+    more: <><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></>,
+    close: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
+    edit: <><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,
+    trash: <><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,
+    copy: <><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></>,
+    image: <><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,
+    link: <><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></>,
+    play: <><polygon points="5 3 19 12 5 21 5 3"/></>,
+    download: <><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>,
+    upload: <><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,
+    settings: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></>,
+    chevron: <><polyline points="9 18 15 12 9 6"/></>,
+    sparkle: <><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/></>,
+    food: <><path d="M18 8h1a4 4 0 010 8h-1"/><path d="M2 8h16v9a4 4 0 01-4 4H6a4 4 0 01-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></>,
+    list: <><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></>,
+  };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {paths[name]}
+    </svg>
+  );
+};
+
+// ─── Shared Styles ────────────────────────────────────────────
+const S = {
+  screen: { position:'absolute', inset:0, display:'flex', flexDirection:'column', background:'var(--c-bg)' },
+  topBar: { display:'flex', alignItems:'center', gap:8, padding:'12px 16px', paddingTop:'calc(var(--safe-top) + 12px)', minHeight:56, background:'var(--c-bg)', position:'sticky', top:0, zIndex:10 },
+  topTitle: { fontFamily:'var(--serif)', fontSize:26, fontWeight:400, flex:1, letterSpacing:'-0.3px' },
+  scroll: { flex:1, overflowY:'auto', WebkitOverflowScrolling:'touch', paddingBottom:'calc(var(--safe-bottom) + 80px)' },
+  fab: { position:'fixed', bottom:'calc(var(--safe-bottom) + 72px)', right:20, width:56, height:56, borderRadius:28, background:'var(--c-primary)', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 4px 14px rgba(232,93,58,0.35)', zIndex:20, border:'none' },
+  tabBar: { position:'fixed', bottom:0, left:0, right:0, display:'flex', background:'var(--c-card)', borderTop:'1px solid var(--c-border)', paddingBottom:'var(--safe-bottom)', zIndex:30 },
+  tab: (active) => ({ flex:1, display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0 6px', color: active ? 'var(--c-primary)' : 'var(--c-text2)', fontSize:11, fontWeight: active ? 700 : 500, gap:3, background:'none', border:'none' }),
+  card: { background:'var(--c-card)', borderRadius:16, border:'1px solid var(--c-border)', overflow:'hidden' },
+  input: { width:'100%', padding:'12px 14px', borderRadius:12, border:'1px solid var(--c-border)', background:'var(--c-card)', fontSize:15, color:'var(--c-text)', outline:'none' },
+  inputFocus: { borderColor: 'var(--c-primary)' },
+  label: { fontSize:13, fontWeight:700, color:'var(--c-text2)', letterSpacing:'0.3px', marginBottom:6, display:'block' },
+  btn: { padding:'12px 24px', borderRadius:12, background:'var(--c-primary)', color:'#fff', fontSize:15, fontWeight:600, border:'none', width:'100%', textAlign:'center' },
+  btnOutline: { padding:'12px 24px', borderRadius:12, background:'transparent', color:'var(--c-primary)', fontSize:15, fontWeight:600, border:'2px solid var(--c-primary)', width:'100%' },
+  chip: (bg, fg) => ({ display:'inline-flex', padding:'3px 8px', borderRadius:8, background:bg, color:fg, fontSize:11, fontWeight:600, marginRight:6 }),
+  overlay: { position:'fixed', inset:0, background:'rgba(0,0,0,0.4)', zIndex:100, animation:'fadeOverlay 0.2s ease' },
+  sheet: { position:'fixed', bottom:0, left:0, right:0, background:'var(--c-card)', borderRadius:'20px 20px 0 0', padding:'20px 20px calc(var(--safe-bottom) + 20px)', zIndex:101, animation:'slideUp 0.3s ease', maxHeight:'85vh', overflowY:'auto' },
+  sheetHandle: { width:36, height:4, borderRadius:2, background:'var(--c-border)', margin:'0 auto 16px' },
+};
+
+// ─── Bottom Sheet Component ──────────────────────────────────
+function BottomSheet({ open, onClose, children }) {
+  if (!open) return null;
+  return (
+    <>
+      <div style={S.overlay} onClick={onClose} />
+      <div style={S.sheet}>
+        <div style={S.sheetHandle} />
+        {children}
+      </div>
+    </>
+  );
+}
+
+// ─── Image Component ──────────────────────────────────────────
+function RecipeImage({ recipe, style = {}, size = 'medium' }) {
+  const src = (recipe.images && recipe.images.length > 0) ? recipe.images[0] : ytThumb(recipe.youtubeUrl);
+  if (src) {
+    return <img src={src} alt={recipe.name} style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', ...style }} />;
+  }
+  const iconSize = size === 'small' ? 28 : 40;
+  return (
+    <div style={{ width:'100%', height:'100%', background:'#F5EDE6', display:'flex', alignItems:'center', justifyContent:'center', ...style }}>
+      <Icon name="food" size={iconSize} color="var(--c-text2)" />
+    </div>
+  );
+}
+
+// ─── Recipe Card ──────────────────────────────────────────────
+function RecipeCard({ recipe, onClick }) {
+  return (
+    <div onClick={onClick} className="fade-in" style={{ ...S.card, cursor:'pointer' }}>
+      <div style={{ aspectRatio:'4/3', overflow:'hidden' }}>
+        <RecipeImage recipe={recipe} />
+      </div>
+      <div style={{ padding:12 }}>
+        <div style={{ fontSize:15, fontWeight:600, lineHeight:1.25, marginBottom:6, display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden' }}>
+          {recipe.name}
+        </div>
+        <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
+          {recipe.calories != null && <span style={S.chip('var(--c-orange-bg)','var(--c-orange)')}>{Math.round(recipe.calories)} cal</span>}
+          {recipe.protein != null && <span style={S.chip('var(--c-green-bg)','var(--c-green)')}>{Math.round(recipe.protein)}g protein</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Genre Tile ───────────────────────────────────────────────
+function GenreTile({ genre, count, onClick, onLongPress }) {
+  const timerRef = useRef(null);
+  const onTouchStart = () => { if (onLongPress) timerRef.current = setTimeout(onLongPress, 500); };
+  const onTouchEnd = () => clearTimeout(timerRef.current);
+  return (
+    <div onClick={onClick} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} onTouchMove={onTouchEnd}
+      className="fade-in"
+      style={{ display:'flex', alignItems:'center', padding:16, background:'var(--c-card)', borderRadius:14, border:'1px solid var(--c-border)', cursor:'pointer', marginBottom:8 }}>
+      <div style={{ width:48, height:48, borderRadius:12, background:'var(--c-bg)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:24, flexShrink:0 }}>
+        {genre.emoji || '🍽️'}
+      </div>
+      <div style={{ flex:1, marginLeft:14 }}>
+        <div style={{ fontSize:16, fontWeight:600 }}>{genre.name}</div>
+        <div style={{ fontSize:13, color:'var(--c-text2)' }}>{count} recipe{count !== 1 ? 's' : ''}</div>
+      </div>
+      <Icon name="chevron" size={20} color="var(--c-text2)" />
+    </div>
+  );
+}
+
+// ─── Genres Screen ────────────────────────────────────────────
+function GenresScreen({ onOpenGenre, onCreateRecipe }) {
+  const { genres, recipes, saveGenre, deleteGenre } = useData();
+  const [showForm, setShowForm] = useState(false);
+  const [editGenre, setEditGenre] = useState(null);
+  const [showOptions, setShowOptions] = useState(null);
+  const [name, setName] = useState('');
+  const [emoji, setEmoji] = useState('');
+
+  const countFor = (gid) => recipes.filter(r => r.genreId === gid).length;
+  const uncatCount = recipes.filter(r => !r.genreId).length;
+
+  const openForm = (g = null) => {
+    setEditGenre(g);
+    setName(g ? g.name : '');
+    setEmoji(g ? (g.emoji || '') : '');
+    setShowForm(true);
+    setShowOptions(null);
+  };
+
+  const handleSave = () => {
+    if (!name.trim()) return;
+    const g = editGenre ? { ...editGenre, name: name.trim(), emoji: emoji.trim() || null }
+      : { id: uid(), name: name.trim(), emoji: emoji.trim() || null, createdAt: Date.now() };
+    saveGenre(g);
+    setShowForm(false);
+  };
+
+  const handleDelete = (g) => {
+    if (confirm(`Delete "${g.name}"? Recipes will become uncategorized.`)) {
+      deleteGenre(g.id);
+      setShowOptions(null);
+    }
+  };
+
+  return (
+    <div style={S.screen}>
+      <div style={S.topBar}>
+        <div style={S.topTitle}>Genres</div>
+        <button onClick={() => openForm()} style={{ color:'var(--c-primary)' }}><Icon name="plus" size={24} /></button>
+      </div>
+      <div style={S.scroll}>
+        {genres.length === 0 && (
+          <div style={{ textAlign:'center', padding:'60px 40px' }}>
+            <Icon name="folder" size={56} color="var(--c-text2)" />
+            <div style={{ fontSize:20, fontWeight:600, marginTop:16 }}>No genres yet</div>
+            <div style={{ fontSize:15, color:'var(--c-text2)', marginTop:8, lineHeight:1.5 }}>
+              Create genres to organize your recipes into categories like Pasta, Desserts, etc.
+            </div>
+            <button onClick={() => openForm()} style={{ ...S.btn, width:'auto', display:'inline-flex', alignItems:'center', gap:6, marginTop:20, padding:'12px 20px' }}>
+              <Icon name="plus" size={18} color="#fff" /> Create Genre
+            </button>
+          </div>
+        )}
+        <div style={{ padding:'0 16px' }}>
+          {genres.map(g => (
+            <GenreTile key={g.id} genre={g} count={countFor(g.id)}
+              onClick={() => onOpenGenre(g)}
+              onLongPress={() => setShowOptions(g)} />
+          ))}
+          {uncatCount > 0 && (
+            <GenreTile genre={{ name:'Uncategorized', emoji:'📋' }} count={uncatCount}
+              onClick={() => onOpenGenre({ id: null, name: 'Uncategorized' })} />
+          )}
+        </div>
+      </div>
+      <button style={S.fab} onClick={onCreateRecipe}><Icon name="plus" size={26} color="#fff" /></button>
+
+      {/* Genre Form Sheet */}
+      <BottomSheet open={showForm} onClose={() => setShowForm(false)}>
+        <div style={{ fontSize:20, fontWeight:700, marginBottom:20 }}>{editGenre ? 'Edit Genre' : 'New Genre'}</div>
+        <div style={{ display:'flex', gap:10, marginBottom:20 }}>
+          <input value={emoji} onChange={e => setEmoji(e.target.value)} placeholder="🍽️"
+            style={{ ...S.input, width:64, textAlign:'center', fontSize:28, padding:'8px' }} />
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Italian, Desserts..."
+            style={S.input} autoFocus />
+        </div>
+        <button onClick={handleSave} style={S.btn}>{editGenre ? 'Save' : 'Create'}</button>
+      </BottomSheet>
+
+      {/* Genre Options Sheet */}
+      <BottomSheet open={!!showOptions} onClose={() => setShowOptions(null)}>
+        <button onClick={() => openForm(showOptions)} style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 0', width:'100%', fontSize:16 }}>
+          <Icon name="edit" size={20} /> Edit Genre
+        </button>
+        <button onClick={() => handleDelete(showOptions)} style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 0', width:'100%', fontSize:16, color:'#e53935' }}>
+          <Icon name="trash" size={20} color="#e53935" /> Delete Genre
+        </button>
+      </BottomSheet>
+    </div>
+  );
+}
+
+// ─── All Recipes Screen ───────────────────────────────────────
+function AllRecipesScreen({ onOpenRecipe, onCreateRecipe }) {
+  const { genres, recipes } = useData();
+  const [search, setSearch] = useState('');
+  const [grouped, setGrouped] = useState(false);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return recipes;
+    const q = search.toLowerCase();
+    return recipes.filter(r => r.name.toLowerCase().includes(q));
+  }, [recipes, search]);
+
+  const renderGrid = (list) => (
+    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, padding:'0 16px' }}>
+      {list.map(r => <RecipeCard key={r.id} recipe={r} onClick={() => onOpenRecipe(r)} />)}
+    </div>
+  );
+
+  return (
+    <div style={S.screen}>
+      <div style={S.topBar}>
+        <div style={S.topTitle}>All Recipes</div>
+        <button onClick={() => setGrouped(!grouped)} style={{ color:'var(--c-text2)' }}>
+          <Icon name={grouped ? 'list' : 'folder'} size={22} />
+        </button>
+      </div>
+      <div style={S.scroll}>
+        {/* Search */}
+        <div style={{ padding:'0 16px 12px', position:'relative' }}>
+          <div style={{ position:'absolute', left:28, top:12, pointerEvents:'none' }}><Icon name="search" size={18} color="var(--c-text2)" /></div>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search recipes..."
+            style={{ ...S.input, paddingLeft:42 }} />
+        </div>
+
+        {filtered.length === 0 ? (
+          <div style={{ textAlign:'center', padding:'40px', color:'var(--c-text2)' }}>
+            <Icon name="search" size={40} color="var(--c-text2)" />
+            <div style={{ marginTop:12, fontSize:16 }}>{search ? 'No results found' : 'No recipes yet'}</div>
+          </div>
+        ) : grouped ? (
+          <>
+            {genres.map(g => {
+              const list = filtered.filter(r => r.genreId === g.id);
+              if (!list.length) return null;
+              return (
+                <div key={g.id}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, padding:'16px 16px 10px', fontSize:17, fontWeight:700 }}>
+                    <span>{g.emoji || '🍽️'}</span> {g.name}
+                    <span style={{ fontSize:14, color:'var(--c-text2)', fontWeight:400 }}>{list.length}</span>
+                  </div>
+                  {renderGrid(list)}
+                </div>
+              );
+            })}
+            {(() => {
+              const uncat = filtered.filter(r => !r.genreId);
+              if (!uncat.length) return null;
+              return (
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, padding:'16px 16px 10px', fontSize:17, fontWeight:700 }}>📋 Uncategorized</div>
+                  {renderGrid(uncat)}
+                </div>
+              );
+            })()}
+          </>
+        ) : renderGrid(filtered)}
+        <div style={{ height:20 }} />
+      </div>
+      <button style={S.fab} onClick={onCreateRecipe}><Icon name="plus" size={26} color="#fff" /></button>
+    </div>
+  );
+}
+
+// ─── Genre Recipes Screen ─────────────────────────────────────
+function GenreRecipesScreen({ genre, onBack, onOpenRecipe, onCreateRecipe }) {
+  const { recipes } = useData();
+  const list = recipes.filter(r => genre.id ? r.genreId === genre.id : !r.genreId);
+
+  return (
+    <div style={S.screen}>
+      <div style={S.topBar}>
+        <button onClick={onBack} style={{ color:'var(--c-text)' }}><Icon name="back" size={24} /></button>
+        <div style={S.topTitle}>{genre.name}</div>
+      </div>
+      <div style={S.scroll}>
+        {list.length === 0 ? (
+          <div style={{ textAlign:'center', padding:'60px 40px', color:'var(--c-text2)' }}>
+            <Icon name="food" size={48} color="var(--c-text2)" />
+            <div style={{ marginTop:12, fontSize:16 }}>No recipes in {genre.name}</div>
+          </div>
+        ) : (
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, padding:'0 16px' }}>
+            {list.map(r => <RecipeCard key={r.id} recipe={r} onClick={() => onOpenRecipe(r)} />)}
+          </div>
+        )}
+      </div>
+      <button style={S.fab} onClick={() => onCreateRecipe(genre.id)}><Icon name="plus" size={26} color="#fff" /></button>
+    </div>
+  );
+}
+
+// ─── Recipe Detail Screen ─────────────────────────────────────
+function RecipeDetailScreen({ recipe: initialRecipe, onBack, onEdit }) {
+  const { recipes, genres, deleteRecipe, duplicateRecipe } = useData();
+  const recipe = recipes.find(r => r.id === initialRecipe.id) || initialRecipe;
+  const genre = genres.find(g => g.id === recipe.genreId);
+  const [showMenu, setShowMenu] = useState(false);
+  const [imgIdx, setImgIdx] = useState(0);
+
+  const allImages = [...(recipe.images || [])];
+  const yt = ytThumb(recipe.youtubeUrl);
+  if (yt) allImages.push(yt);
+
+  const handleDelete = () => {
+    if (confirm(`Delete "${recipe.name}" permanently?`)) {
+      deleteRecipe(recipe.id);
+      onBack();
+    }
+  };
+
+  const handleDuplicate = async () => {
+    await duplicateRecipe(recipe);
+    setShowMenu(false);
+  };
+
+  const hasNutrition = recipe.calories != null || recipe.protein != null || recipe.carbs != null || recipe.fat != null;
+
+  return (
+    <div style={S.screen}>
+      <div style={{ ...S.scroll, paddingBottom:'calc(var(--safe-bottom) + 20px)' }}>
+        {/* Image carousel */}
+        {allImages.length > 0 && (
+          <div style={{ position:'relative', aspectRatio:'4/3', background:'#F5EDE6' }}>
+            <img src={allImages[imgIdx]} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }}
+              onError={e => e.target.style.display='none'} />
+            {allImages.length > 1 && (
+              <div style={{ position:'absolute', bottom:12, left:'50%', transform:'translateX(-50%)', display:'flex', gap:6 }}>
+                {allImages.map((_, i) => (
+                  <div key={i} onClick={() => setImgIdx(i)}
+                    style={{ width: i === imgIdx ? 20 : 6, height:6, borderRadius:3, background: i === imgIdx ? '#fff' : 'rgba(255,255,255,0.5)', transition:'width 0.2s', cursor:'pointer' }} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Top bar overlay */}
+        <div style={{ position:'fixed', top:0, left:0, right:0, display:'flex', justifyContent:'space-between', padding:'12px 16px', paddingTop:'calc(var(--safe-top) + 12px)', zIndex:10, background: allImages.length ? 'linear-gradient(rgba(0,0,0,0.3), transparent)' : 'var(--c-bg)' }}>
+          <button onClick={onBack} style={{ width:36, height:36, borderRadius:18, background: allImages.length ? 'rgba(0,0,0,0.3)' : 'var(--c-card)', display:'flex', alignItems:'center', justifyContent:'center', border: allImages.length ? 'none' : '1px solid var(--c-border)' }}>
+            <Icon name="back" size={20} color={allImages.length ? '#fff' : 'var(--c-text)'} />
+          </button>
+          <button onClick={() => setShowMenu(true)} style={{ width:36, height:36, borderRadius:18, background: allImages.length ? 'rgba(0,0,0,0.3)' : 'var(--c-card)', display:'flex', alignItems:'center', justifyContent:'center', border: allImages.length ? 'none' : '1px solid var(--c-border)' }}>
+            <Icon name="more" size={20} color={allImages.length ? '#fff' : 'var(--c-text)'} />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div style={{ padding:20 }}>
+          <h1 style={{ fontFamily:'var(--serif)', fontSize:28, fontWeight:400, lineHeight:1.2, letterSpacing:'-0.3px' }}>{recipe.name}</h1>
+
+          {genre && (
+            <span style={{ display:'inline-block', marginTop:10, padding:'5px 10px', borderRadius:8, background:'rgba(232,93,58,0.1)', color:'var(--c-primary)', fontSize:13, fontWeight:600 }}>
+              {genre.emoji || '🍽️'} {genre.name}
+            </span>
+          )}
+
+          {/* Nutrition */}
+          {hasNutrition && (
+            <div style={{ display:'flex', justifyContent:'space-around', padding:16, marginTop:20, ...S.card }}>
+              {recipe.calories != null && <NutritionItem label="Calories" value={Math.round(recipe.calories)} unit="kcal" color="var(--c-orange)" />}
+              {recipe.protein != null && <NutritionItem label="Protein" value={Math.round(recipe.protein)} unit="g" color="var(--c-green)" />}
+              {recipe.carbs != null && <NutritionItem label="Carbs" value={Math.round(recipe.carbs)} unit="g" color="var(--c-blue)" />}
+              {recipe.fat != null && <NutritionItem label="Fat" value={Math.round(recipe.fat)} unit="g" color="var(--c-yellow)" />}
+            </div>
+          )}
+
+          {/* Links */}
+          {(recipe.youtubeUrl || recipe.websiteUrl) && (
+            <div style={{ marginTop:24 }}>
+              <div style={{ fontSize:18, fontWeight:700, marginBottom:12, fontFamily:'var(--serif)' }}>Links</div>
+              {recipe.youtubeUrl && (
+                <a href={recipe.youtubeUrl} target="_blank" rel="noopener"
+                  style={{ display:'flex', alignItems:'center', gap:12, padding:14, borderRadius:12, background:'rgba(255,0,0,0.06)', marginBottom:8 }}>
+                  <Icon name="play" size={22} color="#e53935" />
+                  <span style={{ flex:1, fontSize:15, fontWeight:600, color:'#e53935' }}>Watch on YouTube</span>
+                  <Icon name="link" size:16 color="rgba(229,57,53,0.5)" />
+                </a>
+              )}
+              {recipe.websiteUrl && (
+                <a href={recipe.websiteUrl} target="_blank" rel="noopener"
+                  style={{ display:'flex', alignItems:'center', gap:12, padding:14, borderRadius:12, background:'rgba(232,93,58,0.06)' }}>
+                  <Icon name="link" size={22} color="var(--c-primary)" />
+                  <span style={{ flex:1, fontSize:15, fontWeight:600, color:'var(--c-primary)' }}>View Recipe Website</span>
+                </a>
+              )}
+            </div>
+          )}
+
+          {/* Ingredients */}
+          {recipe.ingredients && recipe.ingredients.length > 0 && (
+            <div style={{ marginTop:28 }}>
+              <div style={{ fontSize:18, fontWeight:700, marginBottom:12, fontFamily:'var(--serif)' }}>Ingredients</div>
+              {recipe.ingredients.map((ing, i) => (
+                <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:12, marginBottom:8 }}>
+                  <div style={{ width:6, height:6, borderRadius:3, background:'var(--c-primary)', marginTop:8, flexShrink:0 }} />
+                  <div style={{ fontSize:15, lineHeight:1.5 }}>
+                    {ing.amount && <strong>{ing.amount} </strong>}
+                    {ing.unit && <span style={{ color:'var(--c-text2)' }}>{ing.unit} </span>}
+                    {ing.name}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Instructions */}
+          {recipe.instructions && (
+            <div style={{ marginTop:28 }}>
+              <div style={{ fontSize:18, fontWeight:700, marginBottom:12, fontFamily:'var(--serif)' }}>Instructions</div>
+              <div style={{ ...S.card, padding:16 }}>
+                <div style={{ fontSize:15, lineHeight:1.7, whiteSpace:'pre-wrap' }}>{recipe.instructions}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Action menu */}
+      <BottomSheet open={showMenu} onClose={() => setShowMenu(false)}>
+        <button onClick={() => { setShowMenu(false); onEdit(recipe); }}
+          style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 0', width:'100%', fontSize:16 }}>
+          <Icon name="edit" size={20} /> Edit Recipe
+        </button>
+        <button onClick={handleDuplicate}
+          style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 0', width:'100%', fontSize:16 }}>
+          <Icon name="copy" size={20} /> Duplicate
+        </button>
+        <button onClick={handleDelete}
+          style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 0', width:'100%', fontSize:16, color:'#e53935' }}>
+          <Icon name="trash" size={20} color="#e53935" /> Delete
+        </button>
+      </BottomSheet>
+    </div>
+  );
+}
+
+function NutritionItem({ label, value, unit, color }) {
+  return (
+    <div style={{ textAlign:'center' }}>
+      <div style={{ fontSize:11, color:'var(--c-text2)', fontWeight:500 }}>{label}</div>
+      <div style={{ marginTop:4 }}>
+        <span style={{ fontSize:22, fontWeight:800, color }}>{value}</span>
+        <span style={{ fontSize:12, fontWeight:500, color, opacity:0.7 }}> {unit}</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Create / Edit Recipe Screen ──────────────────────────────
+function RecipeFormScreen({ recipe: editRecipe, preselectedGenreId, onBack, onSaved }) {
+  const { genres, saveRecipe } = useData();
+  const isEdit = !!editRecipe;
+
+  const [name, setName] = useState(editRecipe?.name || '');
+  const [genreId, setGenreId] = useState(editRecipe?.genreId || preselectedGenreId || '');
+  const [youtubeUrl, setYoutubeUrl] = useState(editRecipe?.youtubeUrl || '');
+  const [websiteUrl, setWebsiteUrl] = useState(editRecipe?.websiteUrl || '');
+  const [instructions, setInstructions] = useState(editRecipe?.instructions || '');
+  const [calories, setCalories] = useState(editRecipe?.calories != null ? String(editRecipe.calories) : '');
+  const [protein, setProtein] = useState(editRecipe?.protein != null ? String(editRecipe.protein) : '');
+  const [carbs, setCarbs] = useState(editRecipe?.carbs != null ? String(editRecipe.carbs) : '');
+  const [fat, setFat] = useState(editRecipe?.fat != null ? String(editRecipe.fat) : '');
+  const [ingredients, setIngredients] = useState(editRecipe?.ingredients || []);
+  const [images, setImages] = useState(editRecipe?.images || []);
+  const [fetching, setFetching] = useState(false);
+  const fileRef = useRef();
+
+  const addIngredient = () => setIngredients([...ingredients, { name: '', amount: '', unit: '' }]);
+  const updateIngredient = (i, field, val) => {
+    const copy = [...ingredients];
+    copy[i] = { ...copy[i], [field]: val };
+    setIngredients(copy);
+  };
+  const removeIngredient = (i) => setIngredients(ingredients.filter((_, idx) => idx !== i));
+
+  const handleImagePick = async (e) => {
+    const files = Array.from(e.target.files);
+    for (const file of files) {
+      const dataUrl = await fileToDataUrl(file);
+      setImages(prev => [...prev, dataUrl]);
+    }
+    e.target.value = '';
+  };
+
+  const fetchYoutube = async () => {
+    const url = youtubeUrl.trim();
+    if (!url) return;
+    setFetching(true);
+    try {
+      const vid = extractYoutubeId(url);
+      if (!vid) { alert('Invalid YouTube URL'); return; }
+
+      // Fetch oEmbed for title
+      const resp = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${vid}&format=json`);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (!name && data.title) setName(data.title);
+      }
+
+      // Try to fetch page for description (may be blocked by CORS)
+      try {
+        const pageResp = await fetch(`https://www.youtube.com/watch?v=${vid}`);
+        if (pageResp.ok) {
+          const html = await pageResp.text();
+          const descMatch = html.match(/"shortDescription":"(.*?)"/);
+          if (descMatch) {
+            let desc = descMatch[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+            // Parse ingredients
+            if (ingredients.length === 0) {
+              const parsed = parseIngredients(desc);
+              if (parsed.length) setIngredients(parsed);
+            }
+            // Parse instructions
+            if (!instructions) {
+              const inst = parseInstructions(desc);
+              if (inst) setInstructions(inst);
+            }
+          }
+        }
+      } catch (e) {
+        // CORS blocked - expected for YouTube pages
+        console.log('Could not fetch video page (CORS expected)');
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  const parseIngredients = (desc) => {
+    const lines = desc.split('\n');
+    const result = [];
+    let inSection = false;
+    for (const line of lines) {
+      const t = line.trim();
+      const lower = t.toLowerCase();
+      if (lower.includes('ingredient') && t.length < 40) { inSection = true; continue; }
+      if (inSection && (lower.includes('instruction') || lower.includes('direction') || lower.includes('method'))) { inSection = false; continue; }
+      if (inSection && t) {
+        const cleaned = t.replace(/^[-•*·►]\s*/, '').replace(/^\d+[.)]\s*/, '').trim();
+        if (cleaned && cleaned.length > 1) {
+          const m = cleaned.match(/^([\d½¼¾⅓⅔⅛/.]+)\s*(cups?|tbsp|tsp|tablespoons?|teaspoons?|oz|ounces?|lbs?|pounds?|g|grams?|kg|ml|liters?|pinch|dash|cloves?|cans?|pieces?|slices?|large|medium|small)?\s*(.*)/i);
+          if (m && m[3]) {
+            result.push({ amount: m[1], unit: m[2] || '', name: m[3].trim() });
+          } else {
+            result.push({ amount: '', unit: '', name: cleaned });
+          }
+        }
+      }
+    }
+    return result;
+  };
+
+  const parseInstructions = (desc) => {
+    const lines = desc.split('\n');
+    const result = [];
+    let inSection = false;
+    for (const line of lines) {
+      const t = line.trim();
+      const lower = t.toLowerCase();
+      if ((lower.includes('instruction') || lower.includes('direction') || lower.includes('method') || lower.includes('steps')) && t.length < 40) { inSection = true; continue; }
+      if (inSection) {
+        if (lower.startsWith('follow') || lower.startsWith('subscribe') || lower.includes('social media')) break;
+        if (t) result.push(t.replace(/^[-•*·]\s*/, '').replace(/^\d+[.)]\s*/, '').trim());
+      }
+    }
+    return result.length ? result.join('\n') : null;
+  };
+
+  const handleSave = async () => {
+    if (!name.trim()) { alert('Recipe name is required'); return; }
+    const r = {
+      id: editRecipe?.id || uid(),
+      name: name.trim(),
+      genreId: genreId || null,
+      images,
+      youtubeUrl: youtubeUrl.trim() || null,
+      websiteUrl: websiteUrl.trim() || null,
+      instructions: instructions.trim() || null,
+      calories: calories ? parseFloat(calories) : null,
+      protein: protein ? parseFloat(protein) : null,
+      carbs: carbs ? parseFloat(carbs) : null,
+      fat: fat ? parseFloat(fat) : null,
+      ingredients: ingredients.filter(i => i.name.trim()),
+      createdAt: editRecipe?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    };
+    await saveRecipe(r);
+    onSaved ? onSaved(r) : onBack();
+  };
+
+  return (
+    <div style={S.screen}>
+      <div style={S.topBar}>
+        <button onClick={onBack}><Icon name="back" size={24} /></button>
+        <div style={{ ...S.topTitle, fontSize:20 }}>{isEdit ? 'Edit Recipe' : 'New Recipe'}</div>
+        <button onClick={handleSave} style={{ color:'var(--c-primary)', fontWeight:700, fontSize:16 }}>
+          {isEdit ? 'Save' : 'Create'}
+        </button>
+      </div>
+      <div style={S.scroll}>
+        <div style={{ padding:'0 20px 40px' }}>
+          {/* Photos */}
+          <label style={S.label}>PHOTOS</label>
+          <div style={{ display:'flex', gap:10, overflowX:'auto', paddingBottom:4, marginBottom:20 }}>
+            {images.map((img, i) => (
+              <div key={i} style={{ position:'relative', width:90, height:90, borderRadius:12, overflow:'hidden', flexShrink:0 }}>
+                <img src={img} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+                <button onClick={() => setImages(images.filter((_, idx) => idx !== i))}
+                  style={{ position:'absolute', top:4, right:4, width:22, height:22, borderRadius:11, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  <Icon name="close" size={12} color="#fff" />
+                </button>
+              </div>
+            ))}
+            <button onClick={() => fileRef.current.click()}
+              style={{ width:90, height:90, borderRadius:12, border:'1px dashed var(--c-border)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:4, flexShrink:0, color:'var(--c-text2)' }}>
+              <Icon name="image" size={24} color="var(--c-text2)" />
+              <span style={{ fontSize:11 }}>Add</span>
+            </button>
+            <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleImagePick} style={{ display:'none' }} />
+          </div>
+
+          {/* Name */}
+          <label style={S.label}>RECIPE NAME *</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Spaghetti Carbonara" style={{ ...S.input, marginBottom:20 }} />
+
+          {/* Genre */}
+          <label style={S.label}>GENRE</label>
+          <select value={genreId} onChange={e => setGenreId(e.target.value)}
+            style={{ ...S.input, marginBottom:20, appearance:'auto' }}>
+            <option value="">No genre</option>
+            {genres.map(g => <option key={g.id} value={g.id}>{g.emoji || '🍽️'} {g.name}</option>)}
+          </select>
+
+          {/* YouTube */}
+          <label style={S.label}>YOUTUBE URL</label>
+          <div style={{ display:'flex', gap:8, marginBottom:4 }}>
+            <input value={youtubeUrl} onChange={e => setYoutubeUrl(e.target.value)} placeholder="https://youtube.com/watch?v=..."
+              style={{ ...S.input, flex:1 }} />
+            <button onClick={fetchYoutube} disabled={fetching}
+              style={{ ...S.btn, width:'auto', padding:'12px 14px', opacity: fetching ? 0.6 : 1 }}>
+              {fetching ? '...' : '✨'}
+            </button>
+          </div>
+          <div style={{ fontSize:12, color:'var(--c-text2)', marginBottom:20 }}>Tap ✨ to auto-fill from video description</div>
+
+          {/* Website */}
+          <label style={S.label}>WEBSITE URL</label>
+          <input value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="https://example.com/recipe"
+            style={{ ...S.input, marginBottom:20 }} />
+
+          {/* Nutrition */}
+          <label style={S.label}>NUTRITION (PER SERVING)</label>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:20 }}>
+            <input value={calories} onChange={e => setCalories(e.target.value)} placeholder="Calories" type="number" style={S.input} />
+            <input value={protein} onChange={e => setProtein(e.target.value)} placeholder="Protein (g)" type="number" style={S.input} />
+            <input value={carbs} onChange={e => setCarbs(e.target.value)} placeholder="Carbs (g)" type="number" style={S.input} />
+            <input value={fat} onChange={e => setFat(e.target.value)} placeholder="Fat (g)" type="number" style={S.input} />
+          </div>
+
+          {/* Ingredients */}
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+            <label style={{ ...S.label, marginBottom:0 }}>INGREDIENTS</label>
+            <button onClick={addIngredient} style={{ color:'var(--c-primary)', fontSize:14, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}>
+              <Icon name="plus" size={16} color="var(--c-primary)" /> Add
+            </button>
+          </div>
+          {ingredients.length === 0 && (
+            <div style={{ padding:16, background:'var(--c-bg)', borderRadius:12, color:'var(--c-text2)', fontSize:14, marginBottom:20 }}>
+              No ingredients added yet
+            </div>
+          )}
+          {ingredients.map((ing, i) => (
+            <div key={i} style={{ display:'flex', gap:6, marginBottom:8, alignItems:'center' }}>
+              <input value={ing.amount} onChange={e => updateIngredient(i, 'amount', e.target.value)} placeholder="Amt" style={{ ...S.input, width:55, padding:'10px 8px', fontSize:14 }} />
+              <input value={ing.unit} onChange={e => updateIngredient(i, 'unit', e.target.value)} placeholder="Unit" style={{ ...S.input, width:55, padding:'10px 8px', fontSize:14 }} />
+              <input value={ing.name} onChange={e => updateIngredient(i, 'name', e.target.value)} placeholder="Ingredient" style={{ ...S.input, flex:1, padding:'10px 8px', fontSize:14 }} />
+              <button onClick={() => removeIngredient(i)} style={{ color:'#e53935', flexShrink:0, padding:4 }}>
+                <Icon name="close" size={16} color="#e53935" />
+              </button>
+            </div>
+          ))}
+
+          {/* Instructions */}
+          <label style={{ ...S.label, marginTop:20 }}>INSTRUCTIONS</label>
+          <textarea value={instructions} onChange={e => setInstructions(e.target.value)} placeholder="Step-by-step cooking instructions..."
+            rows={6} style={{ ...S.input, resize:'vertical', lineHeight:1.6 }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Settings Screen ──────────────────────────────────────────
+function SettingsScreen({ onBack }) {
+  const { exportData, importData, recipes, genres } = useData();
+  const importRef = useRef();
+
+  const handleImport = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      await importData(file);
+      alert('Import successful!');
+    } catch (err) {
+      alert('Import failed: ' + err.message);
+    }
+    e.target.value = '';
+  };
+
+  return (
+    <div style={S.screen}>
+      <div style={S.topBar}>
+        <button onClick={onBack}><Icon name="back" size={24} /></button>
+        <div style={{ ...S.topTitle, fontSize:20 }}>Settings</div>
+      </div>
+      <div style={S.scroll}>
+        <div style={{ padding:'0 20px' }}>
+          <div style={{ ...S.card, marginBottom:12 }}>
+            <div style={{ padding:16 }}>
+              <div style={{ fontSize:13, color:'var(--c-text2)', fontWeight:600, marginBottom:8 }}>DATA</div>
+              <div style={{ fontSize:15, color:'var(--c-text2)', marginBottom:16 }}>
+                {recipes.length} recipe{recipes.length !== 1 ? 's' : ''} · {genres.length} genre{genres.length !== 1 ? 's' : ''}
+              </div>
+              <button onClick={exportData} style={{ ...S.btn, display:'flex', alignItems:'center', justifyContent:'center', gap:8, marginBottom:10 }}>
+                <Icon name="download" size={18} color="#fff" /> Export Recipes (JSON)
+              </button>
+              <button onClick={() => importRef.current.click()} style={{ ...S.btnOutline, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+                <Icon name="upload" size={18} color="var(--c-primary)" /> Import Recipes
+              </button>
+              <input ref={importRef} type="file" accept=".json" onChange={handleImport} style={{ display:'none' }} />
+            </div>
+          </div>
+          <div style={{ padding:20, color:'var(--c-text2)', fontSize:13, textAlign:'center', lineHeight:1.5 }}>
+            All data is stored locally on this device. Export regularly to back up your recipes.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── App Router ───────────────────────────────────────────────
+function App() {
+  const [screen, setScreen] = useState({ name: 'genres' });
+  const [tab, setTab] = useState(0);
+
+  const navigate = (name, props = {}) => setScreen({ name, ...props });
+
+  // Tab screens
+  if (screen.name === 'settings') {
+    return <SettingsScreen onBack={() => navigate(tab === 0 ? 'genres' : 'allRecipes')} />;
+  }
+  if (screen.name === 'genreRecipes') {
+    return <GenreRecipesScreen genre={screen.genre}
+      onBack={() => navigate('genres')}
+      onOpenRecipe={(r) => navigate('detail', { recipe: r })}
+      onCreateRecipe={(gid) => navigate('form', { preselectedGenreId: gid })} />;
+  }
+  if (screen.name === 'detail') {
+    return <RecipeDetailScreen recipe={screen.recipe}
+      onBack={() => navigate(tab === 0 ? 'genres' : 'allRecipes')}
+      onEdit={(r) => navigate('form', { editRecipe: r })} />;
+  }
+  if (screen.name === 'form') {
+    return <RecipeFormScreen
+      recipe={screen.editRecipe}
+      preselectedGenreId={screen.preselectedGenreId}
+      onBack={() => navigate(tab === 0 ? 'genres' : 'allRecipes')}
+      onSaved={() => navigate(tab === 0 ? 'genres' : 'allRecipes')} />;
+  }
+
+  return (
+    <div style={{ height:'100%', position:'relative' }}>
+      <div style={{ height:'100%', display: tab === 0 ? 'block' : 'none' }}>
+        <GenresScreen
+          onOpenGenre={(g) => navigate('genreRecipes', { genre: g })}
+          onCreateRecipe={() => navigate('form')} />
+      </div>
+      <div style={{ height:'100%', display: tab === 1 ? 'block' : 'none' }}>
+        <AllRecipesScreen
+          onOpenRecipe={(r) => navigate('detail', { recipe: r })}
+          onCreateRecipe={() => navigate('form')} />
+      </div>
+
+      {/* Tab Bar */}
+      <div style={S.tabBar}>
+        <button style={S.tab(tab === 0)} onClick={() => { setTab(0); navigate('genres'); }}>
+          <Icon name="folder" size={22} /> Genres
+        </button>
+        <button style={S.tab(tab === 1)} onClick={() => { setTab(1); navigate('allRecipes'); }}>
+          <Icon name="grid" size={22} /> All Recipes
+        </button>
+        <button style={S.tab(false)} onClick={() => navigate('settings')}>
+          <Icon name="settings" size={22} /> Settings
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Mount ────────────────────────────────────────────────────
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <DataProvider><App /></DataProvider>
+);
+
+// Register Service Worker
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>
