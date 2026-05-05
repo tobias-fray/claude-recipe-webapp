@@ -37,7 +37,7 @@ button{cursor:pointer;border:none;background:none}
 var h=React.createElement,F=React.Fragment,us=React.useState,ue=React.useEffect,uc=React.useCallback,ur=React.useRef,um=React.useMemo,cc=React.createContext,ux=React.useContext;
 
 /* ========== DATABASE ========== */
-var DB_N='RecipeBook3',DB_V=1;
+var DB_N='RecipeBook3',DB_V=2;
 function odb(){return new Promise(function(ok,no){var r=indexedDB.open(DB_N,DB_V);r.onupgradeneeded=function(e){var d=e.target.result;if(!d.objectStoreNames.contains('genres'))d.createObjectStore('genres',{keyPath:'id'});if(!d.objectStoreNames.contains('recipes'))d.createObjectStore('recipes',{keyPath:'id'});if(!d.objectStoreNames.contains('diary')){var s=d.createObjectStore('diary',{keyPath:'id'});s.createIndex('recipeId','recipeId',{unique:false})}};r.onsuccess=function(){ok(r.result)};r.onerror=function(){no(r.error)}})}
 function dAll(s){return odb().then(function(db){return new Promise(function(ok,no){var t=db.transaction(s,'readonly'),r=t.objectStore(s).getAll();r.onsuccess=function(){ok(r.result)};r.onerror=function(){no(r.error)}})})}
 function dPut(s,i){return odb().then(function(db){return new Promise(function(ok,no){var t=db.transaction(s,'readwrite');t.objectStore(s).put(i);t.oncomplete=function(){ok()};t.onerror=function(){no(t.error)}})})}
@@ -52,32 +52,50 @@ function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 
 /* ========== YOUTUBE EXTRACTION ========== */
-async function fetchYT(url){
+// API key storage
+var API_KEY_STORE='settings';
+async function getApiKey(){try{var db=await odb();return new Promise(function(ok){var t=db.transaction(API_KEY_STORE,'readonly');var r=t.objectStore(API_KEY_STORE).get('anthropic_key');r.onsuccess=function(){ok(r.result?r.result.value:null)};r.onerror=function(){ok(null)}})}catch(e){return null}}
+async function setApiKey(key){var db=await odb();return new Promise(function(ok,no){var t=db.transaction(API_KEY_STORE,'readwrite');t.objectStore(API_KEY_STORE).put({id:'anthropic_key',value:key});t.oncomplete=function(){ok()};t.onerror=function(){no(t.error)}})}
+
+// Ensure settings store exists
+var origOdb=odb;
+odb=function(){return new Promise(function(ok,no){var r=indexedDB.open(DB_N,DB_V);r.onupgradeneeded=function(e){var d=e.target.result;if(!d.objectStoreNames.contains('genres'))d.createObjectStore('genres',{keyPath:'id'});if(!d.objectStoreNames.contains('recipes'))d.createObjectStore('recipes',{keyPath:'id'});if(!d.objectStoreNames.contains('diary')){var s=d.createObjectStore('diary',{keyPath:'id'});s.createIndex('recipeId','recipeId',{unique:false})}if(!d.objectStoreNames.contains('settings'))d.createObjectStore('settings',{keyPath:'id'})};r.onsuccess=function(){ok(r.result)};r.onerror=function(){no(r.error)}})}
+
+async function fetchYT(url,progressCb){
   var vid=ytId(url);
   if(!vid)return{error:'Invalid YouTube URL'};
   var thumb='https://img.youtube.com/vi/'+vid+'/hqdefault.jpg';
-  // 1) Get title via noembed (CORS-safe)
+  // 1) Always: get title via noembed (CORS-safe)
+  if(progressCb)progressCb('Fetching video info...');
   var title=null;
   try{var r=await fetch('https://noembed.com/embed?url=https://www.youtube.com/watch?v='+vid);if(r.ok){var d=await r.json();title=d.title}}catch(e){}
   if(!title)try{var r2=await fetch('https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v='+vid+'&format=json');if(r2.ok){var d2=await r2.json();title=d2.title}}catch(e){}
-  // 2) Try multiple transcript sources
-  var transcript=null;
-  var tUrls=['https://corsproxy.io/?url='+encodeURIComponent('https://yt.lemnoslife.com/videos?part=transcript&id='+vid)];
-  for(var ti=0;ti<tUrls.length;ti++){
-    try{var tr=await fetch(tUrls[ti]);if(tr.ok){var td=await tr.json();if(td.items&&td.items[0]&&td.items[0].transcript){var segs=td.items[0].transcript;transcript=segs.map(function(s){return s.text||''}).join(' ').substring(0,4000);break}}}catch(e){}
+  // 2) Check if API key is available
+  var apiKey=await getApiKey();
+  if(!apiKey){
+    // Basic mode: just return title + thumbnail
+    if(progressCb)progressCb('Got title & thumbnail (add API key in Settings for AI extraction)');
+    return{name:title||'Recipe',ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
   }
-  // 3) Use Claude API via CORS proxy
+  // 3) AI mode: try to get transcript
+  if(progressCb)progressCb('Fetching transcript...');
+  var transcript=null;
+  try{
+    var tr=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://yt.lemnoslife.com/videos?part=transcript&id='+vid));
+    if(tr.ok){var td=await tr.json();if(td.items&&td.items[0]&&td.items[0].transcript){transcript=td.items[0].transcript.map(function(s){return s.text||''}).join(' ').substring(0,4000)}}
+  }catch(e){console.log('Transcript unavailable')}
+  // 4) Call Claude API with the key
+  if(progressCb)progressCb('AI extracting recipe...');
   var context='Video title: "'+(title||'Unknown recipe')+'"\n';
   if(transcript)context+='Video transcript (partial):\n'+transcript+'\n';
-  else context+='No transcript available. Please provide the standard/traditional recipe for this dish based on the title.\n';
+  else context+='No transcript available. Provide the standard recipe for this dish.\n';
   try{
-    var prompt=context+'\nExtract or provide the complete recipe.\n\nReturn ONLY valid JSON, no markdown, no backticks:\n{"name":"Recipe Name","ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Preheat oven to 180 degrees C","Mix dry ingredients together"],"calories":450,"protein":25,"carbs":50,"fat":15}\n\nRules:\n1. ALL measurements in metric: g, kg, ml, L only. Convert cups/oz/lbs.\n2. amount = string number. unit = g/kg/ml/L/tsp/tbsp/pinch/clove/piece/slice or empty.\n3. instructions = array of clear individual step strings.\n4. Nutrition per serving as integers or null.\n5. Provide authentic recipe. Serves 4.';
-    var apiUrl='https://corsproxy.io/?url='+encodeURIComponent('https://api.anthropic.com/v1/messages');
-    var resp=await fetch(apiUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,messages:[{role:'user',content:prompt}]})});
-    if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var clean=txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();var p=JSON.parse(clean);return{name:p.name||title||'Recipe',ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories||null,protein:p.protein||null,carbs:p.carbs||null,fat:p.fat||null,thumbnail:thumb}}
-    else{var errText=await resp.text();console.log('API response:',resp.status,errText)}
-  }catch(e){console.log('AI parse failed',e)}
-  return{name:title||'Recipe',ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb};
+    var prompt=context+'\nExtract or provide the complete recipe.\n\nReturn ONLY valid JSON, no markdown, no backticks:\n{"name":"Recipe Name","ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Preheat oven to 180 degrees C","Mix dry ingredients"],"calories":450,"protein":25,"carbs":50,"fat":15}\n\nRules:\n1. ALL measurements metric: g, kg, ml, L. Convert cups/oz/lbs.\n2. amount=string, unit=g/kg/ml/L/tsp/tbsp/pinch/clove/piece/slice or empty.\n3. instructions=array of clear step strings.\n4. Nutrition per serving as integers or null.\n5. Authentic recipe. Serves 4.';
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,messages:[{role:'user',content:prompt}]})});
+    if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var clean=txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();var p=JSON.parse(clean);return{name:p.name||title||'Recipe',ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories||null,protein:p.protein||null,carbs:p.carbs||null,fat:p.fat||null,thumbnail:thumb,mode:'ai'}}
+    else{var errText=await resp.text();console.log('API error:',resp.status,errText);if(resp.status===401)return{name:title||'Recipe',ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic',warning:'Invalid API key. Check Settings.'}}
+  }catch(e){console.log('AI failed',e)}
+  return{name:title||'Recipe',ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
 }
 
 /* ========== DATA CONTEXT ========== */
@@ -292,10 +310,11 @@ function SForm(p){
   async function pickImg(e){var files=Array.from(e.target.files);for(var i=0;i<files.length;i++){var d=await f2d(files[i]);setImgs(function(prev){return prev.concat([d])})}e.target.value=''}
   async function doFetch(){
     var u=yt.trim();if(!u){setFm('Enter a YouTube URL first');return}
-    setFt(true);setFm('Analyzing video...');
+    setFt(true);
     try{
-      var r=await fetchYT(u);
+      var r=await fetchYT(u,function(msg){setFm(msg)});
       if(r.error){setFm(r.error);setTimeout(function(){setFm('')},3000);return}
+      if(r.warning){setFm(r.warning);setTimeout(function(){setFm('')},5000)}
       if(!nm&&r.name)setNm(r.name);
       if(ing.length===0&&r.ingredients&&r.ingredients.length>0)setIng(r.ingredients);
       if(!ins&&r.instructions&&r.instructions.length>0)setIns(r.instructions.join('\n'));
@@ -303,9 +322,12 @@ function SForm(p){
       if(!pro&&r.protein)setPro(''+r.protein);
       if(!crb&&r.carbs)setCrb(''+r.carbs);
       if(!fat&&r.fat)setFat(''+r.fat);
-      setFm('Recipe extracted successfully!');
+      if(!r.warning){
+        if(r.mode==='ai')setFm('Recipe extracted with AI!');
+        else setFm('Got title & thumbnail. Add API key in Settings for full extraction.');
+      }
     }catch(e){setFm('Failed: '+e.message)}
-    finally{setFt(false);setTimeout(function(){setFm('')},4000)}
+    finally{setFt(false);setTimeout(function(){setFm('')},5000)}
   }
   async function save(){
     if(!nm.trim()){alert('Recipe name is required');return}
@@ -322,7 +344,7 @@ function SForm(p){
     // Genre
     h('div',{style:lbl},'GENRE'),h('select',{value:gi,onChange:function(e){setGi(e.target.value)},style:Object.assign({},inp,{marginBottom:20})},h('option',{value:''},'No genre'),D.genres.map(function(g){return h('option',{key:g.id,value:g.id},(g.emoji||'\uD83C\uDF7D\uFE0F')+' '+g.name)})),
     // YouTube
-    h('div',{style:lbl},'YOUTUBE URL'),h('div',{style:{display:'flex',gap:8,marginBottom:4}},h('input',{value:yt,onChange:function(e){setYt(e.target.value)},placeholder:'Video or Shorts URL',style:Object.assign({},inp,{flex:1})}),h('button',{onClick:doFetch,disabled:fetching,style:{padding:'12px 14px',borderRadius:12,background:'var(--pri)',color:'#fff',fontWeight:600,opacity:fetching?0.6:1,display:'flex',alignItems:'center',justifyContent:'center',minWidth:48}},fetching?h('div',{className:'sp'}):h(Ic,{name:'sparkle',size:20,color:'#fff'}))),h('div',{style:{fontSize:12,marginBottom:20,minHeight:18,color:fmsg.includes('success')?'var(--grn)':fmsg.includes('Failed')||fmsg.includes('Invalid')?'#e53935':'var(--text2)'}},fmsg||'Tap \u2728 to auto-extract recipe with AI (title + transcript)'),
+    h('div',{style:lbl},'YOUTUBE URL'),h('div',{style:{display:'flex',gap:8,marginBottom:4}},h('input',{value:yt,onChange:function(e){setYt(e.target.value)},placeholder:'Video or Shorts URL',style:Object.assign({},inp,{flex:1})}),h('button',{onClick:doFetch,disabled:fetching,style:{padding:'12px 14px',borderRadius:12,background:'var(--pri)',color:'#fff',fontWeight:600,opacity:fetching?0.6:1,display:'flex',alignItems:'center',justifyContent:'center',minWidth:48}},fetching?h('div',{className:'sp'}):h(Ic,{name:'sparkle',size:20,color:'#fff'}))),h('div',{style:{fontSize:12,marginBottom:20,minHeight:18,color:fmsg.includes('success')?'var(--grn)':fmsg.includes('Failed')||fmsg.includes('Invalid')?'#e53935':'var(--text2)'}},fmsg||'Tap \u2728 to fetch title & thumbnail. With API key: full AI extraction.'),
     // Website
     h('div',{style:lbl},'WEBSITE URL'),h('input',{value:wu,onChange:function(e){setWu(e.target.value)},placeholder:'https://example.com/recipe',style:Object.assign({},inp,{marginBottom:20})}),
     // Nutrition
@@ -335,8 +357,46 @@ function SForm(p){
   )))}
 
 /* ========== SETTINGS ========== */
-function SSet(p){var D=useData();var iRef=ur(null);async function doImport(e){var f=e.target.files[0];if(!f)return;try{await D.importAll(f);alert('Import successful!')}catch(e){alert('Import failed: '+e.message)}e.target.value=''}
-  return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},h('div',{style:topBar},h('button',{onClick:p.onBack},h(Ic,{name:'back',size:24})),h('div',{style:{fontSize:20,fontFamily:'var(--serif)',flex:1}},'Settings')),h('div',{style:scr},h('div',{style:{padding:'0 20px'}},h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16}},h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:8}},'DATA'),h('div',{style:{fontSize:15,color:'var(--text2)',marginBottom:16}},D.recipes.length+' recipes \u00B7 '+D.genres.length+' genres'),h('button',{onClick:D.exportAll,style:{padding:'12px 24px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:10}},h(Ic,{name:'download',size:18,color:'#fff'}),' Export (JSON)'),h('button',{onClick:function(){iRef.current.click()},style:{padding:'12px 24px',borderRadius:12,background:'transparent',color:'var(--pri)',fontSize:15,fontWeight:600,border:'2px solid var(--pri)',width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8}},h(Ic,{name:'upload',size:18,color:'var(--pri)'}),' Import'),h('input',{ref:iRef,type:'file',accept:'.json',onChange:doImport,style:{display:'none'}})),h('div',{style:{padding:20,color:'var(--text2)',fontSize:13,textAlign:'center',lineHeight:1.5}},'All data stored locally on this device. Export regularly to back up.'))))}
+function SSet(p){
+  var D=useData();var iRef=ur(null);
+  var _ak=us(''),ak=_ak[0],setAk=_ak[1];
+  var _akLoaded=us(false),akLoaded=_akLoaded[0],setAkLoaded=_akLoaded[1];
+  var _akMsg=us(''),akMsg=_akMsg[0],setAkMsg=_akMsg[1];
+  var _showKey=us(false),showKey=_showKey[0],setShowKey=_showKey[1];
+  // Load API key on mount
+  ue(function(){getApiKey().then(function(k){setAk(k||'');setAkLoaded(true)})},[]);
+  async function saveKey(){await setApiKey(ak.trim()||null);setAkMsg(ak.trim()?'API key saved!':'API key removed.');setTimeout(function(){setAkMsg('')},3000)}
+  async function doImport(e){var f=e.target.files[0];if(!f)return;try{await D.importAll(f);alert('Import successful!')}catch(e){alert('Import failed: '+e.message)}e.target.value=''}
+  return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},
+    h('div',{style:topBar},h('button',{onClick:p.onBack},h(Ic,{name:'back',size:24})),h('div',{style:{fontSize:20,fontFamily:'var(--serif)',flex:1}},'Settings')),
+    h('div',{style:scr},h('div',{style:{padding:'0 20px'}},
+      // API Key section
+      h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16,marginBottom:12}},
+        h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:4}},'AI RECIPE EXTRACTION'),
+        h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Add your Anthropic API key to enable AI-powered recipe extraction from YouTube videos. Without it, only the video title and thumbnail are fetched.'),
+        h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Get a key at ',h('a',{href:'https://console.anthropic.com/settings/keys',target:'_blank',rel:'noopener',style:{color:'var(--pri)',fontWeight:600}},'console.anthropic.com')),
+        akLoaded?h('div',null,
+          h('div',{style:{position:'relative',marginBottom:8}},
+            h('input',{value:ak,onChange:function(e){setAk(e.target.value)},type:showKey?'text':'password',placeholder:'sk-ant-...',style:Object.assign({},inp,{paddingRight:44})}),
+            h('button',{onClick:function(){setShowKey(!showKey)},style:{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',color:'var(--text2)',fontSize:12}},showKey?'Hide':'Show')
+          ),
+          h('button',{onClick:saveKey,style:{padding:'10px 20px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:14,fontWeight:600,width:'100%'}},ak.trim()?'Save Key':'Remove Key'),
+          akMsg?h('div',{style:{fontSize:13,color:'var(--grn)',marginTop:8,textAlign:'center'}},akMsg):null,
+          ak.trim()?h('div',{style:{fontSize:12,color:'var(--grn)',marginTop:8,display:'flex',alignItems:'center',gap:6}},'\u2705 AI extraction enabled'):h('div',{style:{fontSize:12,color:'var(--text2)',marginTop:8}},'\u274C Basic mode (title + thumbnail only)')
+        ):h('div',{style:{textAlign:'center',padding:10}},h('div',{className:'sp spd'}))
+      ),
+      // Data section
+      h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16}},
+        h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:8}},'DATA'),
+        h('div',{style:{fontSize:15,color:'var(--text2)',marginBottom:16}},D.recipes.length+' recipes \u00B7 '+D.genres.length+' genres'),
+        h('button',{onClick:D.exportAll,style:{padding:'12px 24px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:10}},h(Ic,{name:'download',size:18,color:'#fff'}),' Export (JSON)'),
+        h('button',{onClick:function(){iRef.current.click()},style:{padding:'12px 24px',borderRadius:12,background:'transparent',color:'var(--pri)',fontSize:15,fontWeight:600,border:'2px solid var(--pri)',width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8}},h(Ic,{name:'upload',size:18,color:'var(--pri)'}),' Import'),
+        h('input',{ref:iRef,type:'file',accept:'.json',onChange:doImport,style:{display:'none'}})
+      ),
+      h('div',{style:{padding:20,color:'var(--text2)',fontSize:13,textAlign:'center',lineHeight:1.5}},'All data stored locally on this device. Your API key never leaves your phone.')
+    ))
+  );
+}
 
 /* ========== APP ========== */
 function App(){
