@@ -91,7 +91,7 @@ async function fetchYT(url,progressCb){
   else context+='No transcript available. Provide the standard recipe for this dish.\n';
   try{
     var prompt=context+'\nExtract or provide the complete recipe.\n\nReturn ONLY valid JSON, no markdown, no backticks:\n{"name":"Recipe Name","ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Preheat oven to 180 degrees C","Mix dry ingredients"],"calories":450,"protein":25,"carbs":50,"fat":15}\n\nRules:\n1. ALL measurements metric: g, kg, ml, L. Convert cups/oz/lbs.\n2. amount=string, unit=g/kg/ml/L/tsp/tbsp/pinch/clove/piece/slice or empty.\n3. instructions=array of clear step strings.\n4. Nutrition per serving as integers or null.\n5. Authentic recipe. Serves 4.';
-    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,messages:[{role:'user',content:prompt}]})});
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:2000,messages:[{role:'user',content:prompt}]})});
     if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var clean=txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();var p=JSON.parse(clean);return{name:p.name||title||'Recipe',ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories||null,protein:p.protein||null,carbs:p.carbs||null,fat:p.fat||null,thumbnail:thumb,mode:'ai'}}
     else{var errText=await resp.text();console.log('API error:',resp.status,errText);if(resp.status===401)return{name:title||'Recipe',ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic',warning:'Invalid API key. Check Settings.'}}
   }catch(e){console.log('AI failed',e)}
@@ -316,6 +316,8 @@ function SForm(p){
       if(r.error){setFm(r.error);setTimeout(function(){setFm('')},3000);return}
       if(r.warning){setFm(r.warning);setTimeout(function(){setFm('')},5000)}
       if(!nm&&r.name)setNm(r.name);
+      // Add thumbnail to images if not already present
+      if(r.thumbnail){setImgs(function(prev){if(prev.indexOf(r.thumbnail)===-1)return prev.concat([r.thumbnail]);return prev})}
       if(ing.length===0&&r.ingredients&&r.ingredients.length>0)setIng(r.ingredients);
       if(!ins&&r.instructions&&r.instructions.length>0)setIns(r.instructions.join('\n'));
       if(!cal&&r.calories)setCal(''+r.calories);
