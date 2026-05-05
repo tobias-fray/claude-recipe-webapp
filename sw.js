@@ -1,4 +1,4 @@
-const CACHE_NAME = 'recipe-app-v1';
+const CACHE_NAME = 'recipe-app-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -22,7 +22,17 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  // Network-first for navigation, cache-first for assets
+  const url = e.request.url;
+  // Never cache API calls, proxies, or external service requests
+  if (url.includes('api.anthropic.com') ||
+      url.includes('corsproxy.io') ||
+      url.includes('noembed.com') ||
+      url.includes('lemnoslife.com') ||
+      url.includes('youtube.com/oembed') ||
+      url.includes('img.youtube.com') ||
+      e.request.method !== 'GET') {
+    return;
+  }
   if (e.request.mode === 'navigate') {
     e.respondWith(
       fetch(e.request).catch(() => caches.match('./index.html'))
