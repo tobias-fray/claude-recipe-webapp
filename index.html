@@ -36,86 +36,76 @@ button{cursor:pointer;border:none;background:none}
 "use strict";
 var h=React.createElement,F=React.Fragment,us=React.useState,ue=React.useEffect,uc=React.useCallback,ur=React.useRef,um=React.useMemo,cc=React.createContext,ux=React.useContext;
 
-/* ========== DATABASE ========== */
-var DB_N='RecipeBook3',DB_V=2;
-function odb(){return new Promise(function(ok,no){var r=indexedDB.open(DB_N,DB_V);r.onupgradeneeded=function(e){var d=e.target.result;if(!d.objectStoreNames.contains('genres'))d.createObjectStore('genres',{keyPath:'id'});if(!d.objectStoreNames.contains('recipes'))d.createObjectStore('recipes',{keyPath:'id'});if(!d.objectStoreNames.contains('diary')){var s=d.createObjectStore('diary',{keyPath:'id'});s.createIndex('recipeId','recipeId',{unique:false})}};r.onsuccess=function(){ok(r.result)};r.onerror=function(){no(r.error)}})}
+/* ===== DB ===== */
+var DB_N='RecipeBook5',DB_V=1;
+function odb(){return new Promise(function(ok,no){var r=indexedDB.open(DB_N,DB_V);r.onupgradeneeded=function(e){var d=e.target.result;if(!d.objectStoreNames.contains('genres'))d.createObjectStore('genres',{keyPath:'id'});if(!d.objectStoreNames.contains('recipes'))d.createObjectStore('recipes',{keyPath:'id'});if(!d.objectStoreNames.contains('diary')){var s=d.createObjectStore('diary',{keyPath:'id'});s.createIndex('recipeId','recipeId',{unique:false})}if(!d.objectStoreNames.contains('settings'))d.createObjectStore('settings',{keyPath:'id'})};r.onsuccess=function(){ok(r.result)};r.onerror=function(){no(r.error)}})}
 function dAll(s){return odb().then(function(db){return new Promise(function(ok,no){var t=db.transaction(s,'readonly'),r=t.objectStore(s).getAll();r.onsuccess=function(){ok(r.result)};r.onerror=function(){no(r.error)}})})}
 function dPut(s,i){return odb().then(function(db){return new Promise(function(ok,no){var t=db.transaction(s,'readwrite');t.objectStore(s).put(i);t.oncomplete=function(){ok()};t.onerror=function(){no(t.error)}})})}
 function dDel(s,id){return odb().then(function(db){return new Promise(function(ok,no){var t=db.transaction(s,'readwrite');t.objectStore(s).delete(id);t.oncomplete=function(){ok()};t.onerror=function(){no(t.error)}})})}
 function dIdx(s,idx,val){return odb().then(function(db){return new Promise(function(ok,no){var t=db.transaction(s,'readonly'),r=t.objectStore(s).index(idx).getAll(val);r.onsuccess=function(){ok(r.result)};r.onerror=function(){no(r.error)}})})}
 
-/* ========== UTILS ========== */
+/* ===== UTILS ===== */
 var uid=function(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)};
 function ytId(u){if(!u)return null;var m=u.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/))([a-zA-Z0-9_-]{11})/);return m?m[1]:null}
 function ytT(u){var id=ytId(u);return id?'https://img.youtube.com/vi/'+id+'/hqdefault.jpg':null}
 function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=function(){ok(r.result)};r.readAsDataURL(f)})}
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
+function parseAmt(s){if(!s)return null;s=s.trim();var fracs={'\u00BD':0.5,'\u00BC':0.25,'\u00BE':0.75,'\u2153':0.333,'\u2154':0.667};if(fracs[s])return fracs[s];var n=parseFloat(s);return isNaN(n)?null:n}
+function fmtAmt(n){if(n==null)return'';if(n===Math.floor(n))return''+n;return n%1>0.01?n.toFixed(1).replace(/\.0$/,''):''+Math.round(n)}
 
-/* ========== YOUTUBE EXTRACTION ========== */
-// API key storage
-var API_KEY_STORE='settings';
-async function getApiKey(){try{var db=await odb();return new Promise(function(ok){var t=db.transaction(API_KEY_STORE,'readonly');var r=t.objectStore(API_KEY_STORE).get('anthropic_key');r.onsuccess=function(){ok(r.result?r.result.value:null)};r.onerror=function(){ok(null)}})}catch(e){return null}}
-async function setApiKey(key){var db=await odb();return new Promise(function(ok,no){var t=db.transaction(API_KEY_STORE,'readwrite');t.objectStore(API_KEY_STORE).put({id:'anthropic_key',value:key});t.oncomplete=function(){ok()};t.onerror=function(){no(t.error)}})}
+/* ===== API KEY ===== */
+async function getApiKey(){try{var db=await odb();return new Promise(function(ok){var t=db.transaction('settings','readonly');var r=t.objectStore('settings').get('anthropic_key');r.onsuccess=function(){ok(r.result?r.result.value:null)};r.onerror=function(){ok(null)}})}catch(e){return null}}
+async function setApiKey(key){var db=await odb();return new Promise(function(ok,no){var t=db.transaction('settings','readwrite');t.objectStore('settings').put({id:'anthropic_key',value:key});t.oncomplete=function(){ok()};t.onerror=function(){no(t.error)}})}
 
-// Ensure settings store exists
-var origOdb=odb;
-odb=function(){return new Promise(function(ok,no){var r=indexedDB.open(DB_N,DB_V);r.onupgradeneeded=function(e){var d=e.target.result;if(!d.objectStoreNames.contains('genres'))d.createObjectStore('genres',{keyPath:'id'});if(!d.objectStoreNames.contains('recipes'))d.createObjectStore('recipes',{keyPath:'id'});if(!d.objectStoreNames.contains('diary')){var s=d.createObjectStore('diary',{keyPath:'id'});s.createIndex('recipeId','recipeId',{unique:false})}if(!d.objectStoreNames.contains('settings'))d.createObjectStore('settings',{keyPath:'id'})};r.onsuccess=function(){ok(r.result)};r.onerror=function(){no(r.error)}})}
-
-async function fetchYT(url,progressCb){
-  var vid=ytId(url);
-  if(!vid)return{error:'Invalid YouTube URL'};
+/* ===== YT EXTRACTION ===== */
+async function fetchYT(url,cb){
+  var vid=ytId(url);if(!vid)return{error:'Invalid YouTube URL'};
   var thumb='https://img.youtube.com/vi/'+vid+'/hqdefault.jpg';
-  // 1) Always: get title via noembed (CORS-safe)
-  if(progressCb)progressCb('Fetching video info...');
+  if(cb)cb('Fetching video info...');
   var title=null;
   try{var r=await fetch('https://noembed.com/embed?url=https://www.youtube.com/watch?v='+vid);if(r.ok){var d=await r.json();title=d.title}}catch(e){}
   if(!title)try{var r2=await fetch('https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v='+vid+'&format=json');if(r2.ok){var d2=await r2.json();title=d2.title}}catch(e){}
-  // 2) Check if API key is available
   var apiKey=await getApiKey();
-  if(!apiKey){
-    // Basic mode: just return title + thumbnail
-    if(progressCb)progressCb('Got title & thumbnail (add API key in Settings for AI extraction)');
-    return{name:title||'Recipe',ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
-  }
-  // 3) AI mode: try to get transcript
-  if(progressCb)progressCb('Fetching transcript...');
+  if(!apiKey){if(cb)cb('Got title & thumbnail');return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'}}
+  if(cb)cb('Fetching transcript...');
   var transcript=null;
+  try{var tr=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://yt.lemnoslife.com/videos?part=transcript&id='+vid));if(tr.ok){var td=await tr.json();if(td.items&&td.items[0]&&td.items[0].transcript)transcript=td.items[0].transcript.map(function(s){return s.text||''}).join(' ').substring(0,4000)}}catch(e){}
+  if(cb)cb('AI extracting recipe...');
+  var ctx='Title: "'+(title||'Unknown')+'"\n'+(transcript?'Transcript:\n'+transcript+'\n':'Provide standard recipe.\n');
   try{
-    var tr=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://yt.lemnoslife.com/videos?part=transcript&id='+vid));
-    if(tr.ok){var td=await tr.json();if(td.items&&td.items[0]&&td.items[0].transcript){transcript=td.items[0].transcript.map(function(s){return s.text||''}).join(' ').substring(0,4000)}}
-  }catch(e){console.log('Transcript unavailable')}
-  // 4) Call Claude API with the key
-  if(progressCb)progressCb('AI extracting recipe...');
-  var context='Video title: "'+(title||'Unknown recipe')+'"\n';
-  if(transcript)context+='Video transcript (partial):\n'+transcript+'\n';
-  else context+='No transcript available. Provide the standard recipe for this dish.\n';
-  try{
-    var prompt=context+'\nExtract or provide the complete recipe.\n\nReturn ONLY valid JSON, no markdown, no backticks:\n{"name":"Recipe Name","ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Preheat oven to 180 degrees C","Mix dry ingredients"],"calories":450,"protein":25,"carbs":50,"fat":15}\n\nRules:\n1. ALL measurements metric: g, kg, ml, L. Convert cups/oz/lbs.\n2. amount=string, unit=g/kg/ml/L/tsp/tbsp/pinch/clove/piece/slice or empty.\n3. instructions=array of clear step strings.\n4. Nutrition per serving as integers or null.\n5. Authentic recipe. Serves 4.';
-    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:2000,messages:[{role:'user',content:prompt}]})});
-    if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var clean=txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();var p=JSON.parse(clean);return{name:p.name||title||'Recipe',ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories||null,protein:p.protein||null,carbs:p.carbs||null,fat:p.fat||null,thumbnail:thumb,mode:'ai'}}
-    else{var errText=await resp.text();console.log('API error:',resp.status,errText);if(resp.status===401)return{name:title||'Recipe',ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic',warning:'Invalid API key. Check Settings.'}}
-  }catch(e){console.log('AI failed',e)}
-  return{name:title||'Recipe',ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:2000,messages:[{role:'user',content:ctx+'\nReturn ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null.'}]})});
+    if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories,protein:p.protein,carbs:p.carbs,fat:p.fat,thumbnail:thumb,mode:'ai'}}
+    else{var et=await resp.text();console.log('API:',resp.status,et)}
+  }catch(e){console.log('AI fail',e)}
+  return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
 }
 
-/* ========== DATA CONTEXT ========== */
+/* ===== MEAL SCANNER ===== */
+async function scanMeal(imgData,comment){
+  var apiKey=await getApiKey();if(!apiKey)return{error:'Add API key in Settings'};
+  var b64=imgData.split(',')[1],mt=imgData.match(/data:(.*?);/)[1];
+  try{
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:500,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:mt,data:b64}},{type:'text',text:'Estimate nutrition for this meal.'+(comment?' Info: '+comment:'')+'\nReturn ONLY JSON: {"description":"...","calories":500,"protein":30,"carbs":60,"fat":20,"confidence":"medium"}'}]}]})});
+    if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');return JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim())}
+    return{error:'API error '+resp.status}
+  }catch(e){return{error:e.message}}
+}
+
+/* ===== DATA CTX ===== */
 var DataCtx=cc(null);
 function DataProvider(props){
-  var _g=us([]),genres=_g[0],setG=_g[1];
-  var _r=us([]),recipes=_r[0],setR=_r[1];
-  var _l=us(false),loaded=_l[0],setL=_l[1];
-  var reload=uc(async function(){var g=await dAll('genres');var r=await dAll('recipes');g.sort(function(a,b){return a.name.localeCompare(b.name)});r.sort(function(a,b){return(b.updatedAt||0)-(a.updatedAt||0)});setG(g);setR(r);setL(true)},[]);
+  var _g=us([]),G=_g[0],sG=_g[1];var _r=us([]),R=_r[0],sR=_r[1];var _l=us(false),ld=_l[0],sL=_l[1];
+  var reload=uc(async function(){var g=await dAll('genres');var r=await dAll('recipes');g.sort(function(a,b){return a.name.localeCompare(b.name)});r.sort(function(a,b){return(b.updatedAt||0)-(a.updatedAt||0)});sG(g);sR(r);sL(true)},[]);
   ue(function(){reload()},[reload]);
-  var val={genres:genres,recipes:recipes,loaded:loaded,
+  var val={genres:G,recipes:R,loaded:ld,
     saveGenre:async function(g){await dPut('genres',g);await reload()},
-    delGenre:async function(id){var all=await dAll('recipes');for(var i=0;i<all.length;i++){if(all[i].genreId===id){all[i].genreId=null;await dPut('recipes',all[i])}}await dDel('genres',id);await reload()},
+    delGenre:async function(id){var a=await dAll('recipes');for(var i=0;i<a.length;i++){if(a[i].genreId===id){a[i].genreId=null;await dPut('recipes',a[i])}}await dDel('genres',id);await reload()},
     saveRecipe:async function(r){r.updatedAt=Date.now();await dPut('recipes',r);await reload()},
     delRecipe:async function(id){await dDel('recipes',id);await reload()},
-    dupRecipe:async function(r){var d=Object.assign({},r,{id:uid(),name:r.name+' (Copy)',images:(r.images||[]).slice(),ingredients:(r.ingredients||[]).map(function(x){return Object.assign({},x)}),instructions:(r.instructions||[]).slice(),createdAt:Date.now(),updatedAt:Date.now()});await dPut('recipes',d);await reload();return d},
-    getDiary:async function(rid){try{var all=await dIdx('diary','recipeId',rid);all.sort(function(a,b){return b.date-a.date});return all}catch(e){return[]}},
-    addDiary:async function(entry){await dPut('diary',entry)},
-    delDiary:async function(id){await dDel('diary',id)},
-    exportAll:async function(){var di=await dAll('diary');var d={genres:genres,recipes:recipes,diary:di,exported:new Date().toISOString()};var b=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='recipes-backup.json';a.click();URL.revokeObjectURL(u)},
+    dupRecipe:async function(r){var d=Object.assign({},r,{id:uid(),name:r.name+' (Copy)',images:(r.images||[]).slice(),ingredients:(r.ingredients||[]).map(function(x){return Object.assign({},x)}),instructions:(r.instructions||[]).slice(),createdAt:Date.now(),updatedAt:Date.now()});await dPut('recipes',d);await reload()},
+    getDiary:async function(rid){try{var a=await dIdx('diary','recipeId',rid);a.sort(function(a,b){return b.date-a.date});return a}catch(e){return[]}},
+    addDiary:async function(e){await dPut('diary',e)},delDiary:async function(id){await dDel('diary',id)},
+    exportAll:async function(){var di=await dAll('diary');var d={genres:G,recipes:R,diary:di,exported:new Date().toISOString()};var b=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='recipes-backup.json';a.click();URL.revokeObjectURL(u)},
     importAll:async function(file){var t=await file.text();var d=JSON.parse(t);if(d.genres)for(var i=0;i<d.genres.length;i++)await dPut('genres',d.genres[i]);if(d.recipes)for(var i=0;i<d.recipes.length;i++)await dPut('recipes',d.recipes[i]);if(d.diary)for(var i=0;i<d.diary.length;i++)await dPut('diary',d.diary[i]);await reload()}
   };
   return h(DataCtx.Provider,{value:val},props.children);
@@ -123,11 +113,12 @@ function DataProvider(props){
 function useData(){return ux(DataCtx)}
 </script>
 <script>
-/* ========== ICONS ========== */
-function Ic(p){var s=p.size||22,c=p.color||'currentColor',n=p.name;var paths={
+/* ===== ICONS ===== */
+function Ic(p){var s=p.size||22,c=p.color||'currentColor';var d={
 folder:h('path',{d:'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z'}),
 grid:h(F,null,h('rect',{x:3,y:3,width:7,height:7,rx:1.5}),h('rect',{x:14,y:3,width:7,height:7,rx:1.5}),h('rect',{x:3,y:14,width:7,height:7,rx:1.5}),h('rect',{x:14,y:14,width:7,height:7,rx:1.5})),
 plus:h(F,null,h('line',{x1:12,y1:5,x2:12,y2:19}),h('line',{x1:5,y1:12,x2:19,y2:12})),
+minus:h('line',{x1:5,y1:12,x2:19,y2:12}),
 back:h('polyline',{points:'15 18 9 12 15 6'}),
 search:h(F,null,h('circle',{cx:11,cy:11,r:8}),h('line',{x1:21,y1:21,x2:16.65,y2:16.65})),
 more:h(F,null,h('circle',{cx:12,cy:5,r:1.5}),h('circle',{cx:12,cy:12,r:1.5}),h('circle',{cx:12,cy:19,r:1.5})),
@@ -142,276 +133,323 @@ download:h(F,null,h('path',{d:'M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4'}),h('pol
 upload:h(F,null,h('path',{d:'M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4'}),h('polyline',{points:'17 8 12 3 7 8'}),h('line',{x1:12,y1:3,x2:12,y2:15})),
 settings:h(F,null,h('circle',{cx:12,cy:12,r:3}),h('path',{d:'M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z'})),
 chevron:h('polyline',{points:'9 18 15 12 9 6'}),
+chevDown:h('polyline',{points:'6 9 12 15 18 9'}),
 food:h(F,null,h('path',{d:'M18 8h1a4 4 0 010 8h-1'}),h('path',{d:'M2 8h16v9a4 4 0 01-4 4H6a4 4 0 01-4-4V8z'}),h('line',{x1:6,y1:1,x2:6,y2:4}),h('line',{x1:10,y1:1,x2:10,y2:4}),h('line',{x1:14,y1:1,x2:14,y2:4})),
 sparkle:h('path',{d:'M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z'}),
 send:h(F,null,h('line',{x1:22,y1:2,x2:11,y2:13}),h('polygon',{points:'22 2 15 22 11 13 2 9 22 2'})),
 calendar:h(F,null,h('rect',{x:3,y:4,width:18,height:18,rx:2}),h('line',{x1:16,y1:2,x2:16,y2:6}),h('line',{x1:8,y1:2,x2:8,y2:6}),h('line',{x1:3,y1:10,x2:21,y2:10})),
 book:h(F,null,h('path',{d:'M4 19.5A2.5 2.5 0 016.5 17H20'}),h('path',{d:'M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z'})),
-camera:h(F,null,h('path',{d:'M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z'}),h('circle',{cx:12,cy:13,r:4}))
-};
-return h('svg',{width:s,height:s,viewBox:'0 0 24 24',fill:'none',stroke:c,strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round',style:p.style},paths[n])}
+camera:h(F,null,h('path',{d:'M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z'}),h('circle',{cx:12,cy:13,r:4})),
+scan:h(F,null,h('path',{d:'M3 7V5a2 2 0 012-2h2'}),h('path',{d:'M17 3h2a2 2 0 012 2v2'}),h('path',{d:'M21 17v2a2 2 0 01-2 2h-2'}),h('path',{d:'M7 21H5a2 2 0 01-2-2v-2'}),h('circle',{cx:12,cy:12,r:4})),
+sort:h(F,null,h('line',{x1:4,y1:6,x2:20,y2:6}),h('line',{x1:4,y1:12,x2:14,y2:12}),h('line',{x1:4,y1:18,x2:8,y2:18})),
+star:h('polygon',{points:'12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2'}),
+eyeOff:h(F,null,h('path',{d:'M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94'}),h('path',{d:'M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19'}),h('line',{x1:1,y1:1,x2:23,y2:23})),
+eye:h(F,null,h('path',{d:'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z'}),h('circle',{cx:12,cy:12,r:3})),
+users:h(F,null,h('path',{d:'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2'}),h('circle',{cx:9,cy:7,r:4}))
+};return h('svg',{width:s,height:s,viewBox:'0 0 24 24',fill:'none',stroke:c,strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'},d[p.name])}
 
-/* ========== SHARED STYLES ========== */
+/* ===== SHARED ===== */
 var inp={width:'100%',padding:'12px 14px',borderRadius:12,border:'1px solid var(--brd)',background:'var(--card)',fontSize:15,color:'var(--text)',outline:'none'};
 var lbl={fontSize:13,fontWeight:700,color:'var(--text2)',letterSpacing:'0.3px',marginBottom:6,display:'block'};
 var scr={flex:1,overflowY:'auto',WebkitOverflowScrolling:'touch'};
 var topBar={display:'flex',alignItems:'center',gap:8,padding:'12px 16px',paddingTop:'calc(var(--st) + 12px)',minHeight:56,background:'var(--bg)',position:'sticky',top:0,zIndex:10};
-var fab={position:'fixed',bottom:'calc(var(--sb) + 72px)',right:20,width:56,height:56,borderRadius:28,background:'var(--pri)',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 14px rgba(232,93,58,0.35)',zIndex:20};
-
-/* ========== BOTTOM SHEET ========== */
+var fabS={position:'fixed',bottom:'calc(var(--sb) + 72px)',right:20,width:56,height:56,borderRadius:28,background:'var(--pri)',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 14px rgba(232,93,58,0.35)',zIndex:20};
 function Sheet(p){if(!p.open)return null;return h(F,null,h('div',{onClick:p.onClose,style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',zIndex:100,animation:'fadeOv .2s ease'}}),h('div',{style:{position:'fixed',bottom:0,left:0,right:0,background:'var(--card)',borderRadius:'20px 20px 0 0',padding:'20px 20px calc(var(--sb) + 20px)',zIndex:101,animation:'slideUp .3s ease',maxHeight:'85vh',overflowY:'auto'}},h('div',{style:{width:36,height:4,borderRadius:2,background:'var(--brd)',margin:'0 auto 16px'}}),p.children))}
+function NI(p){return h('div',{style:{textAlign:'center'}},h('div',{style:{fontSize:11,color:'var(--text2)',fontWeight:500}},p.label),h('div',{style:{marginTop:4}},h('span',{style:{fontSize:22,fontWeight:800,color:p.color}},p.value),h('span',{style:{fontSize:12,fontWeight:500,color:p.color,opacity:0.7}},' '+p.unit)))}
 
-/* ========== RECIPE IMAGE ========== */
-function RImg(p){var r=p.recipe,st=p.style||{};var src=(r.images&&r.images.length>0)?r.images[0]:ytT(r.youtubeUrl);if(src)return h('img',{src:src,alt:r.name,style:Object.assign({width:'100%',height:'100%',objectFit:'cover',display:'block'},st)});return h('div',{style:Object.assign({width:'100%',height:'100%',background:'#F5EDE6',display:'flex',alignItems:'center',justifyContent:'center'},st)},h(Ic,{name:'food',size:40,color:'var(--text2)'}))}
+/* ===== RECIPE IMAGE (uses coverIndex) ===== */
+function RImg(p){var r=p.recipe;var ci=r.coverIndex||0;var allImgs=(r.images||[]).slice();var yt=ytT(r.youtubeUrl);if(yt)allImgs.push(yt);var src=allImgs[ci]||allImgs[0];if(src)return h('img',{src:src,alt:r.name,style:Object.assign({width:'100%',height:'100%',objectFit:'cover',display:'block'},p.style||{})});return h('div',{style:Object.assign({width:'100%',height:'100%',background:'#F5EDE6',display:'flex',alignItems:'center',justifyContent:'center'},p.style||{})},h(Ic,{name:'food',size:40,color:'var(--text2)'}))}
 
-/* ========== RECIPE CARD ========== */
-function RCard(p){var r=p.recipe;return h('div',{onClick:p.onClick,className:'fi',style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',overflow:'hidden',cursor:'pointer'}},h('div',{style:{aspectRatio:'4/3',overflow:'hidden'}},h(RImg,{recipe:r})),h('div',{style:{padding:12}},h('div',{style:{fontSize:15,fontWeight:600,lineHeight:1.25,marginBottom:6,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}},r.name),h('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},r.calories!=null?h('span',{style:{display:'inline-flex',padding:'3px 8px',borderRadius:8,background:'var(--obg)',color:'var(--org)',fontSize:11,fontWeight:600}},Math.round(r.calories)+' cal'):null,r.protein!=null?h('span',{style:{display:'inline-flex',padding:'3px 8px',borderRadius:8,background:'var(--gbg)',color:'var(--grn)',fontSize:11,fontWeight:600}},Math.round(r.protein)+'g protein'):null)))}
+/* ===== RECIPE CARD ===== */
+function RCard(p){var r=p.recipe;return h('div',{onClick:p.onClick,className:'fi',style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',overflow:'hidden',cursor:'pointer',opacity:r.hidden?0.5:1}},h('div',{style:{aspectRatio:'4/3',overflow:'hidden',position:'relative'}},h(RImg,{recipe:r}),r.hidden?h('div',{style:{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.5)',borderRadius:6,padding:'2px 6px'}},h(Ic,{name:'eyeOff',size:14,color:'#fff'})):null),h('div',{style:{padding:12}},h('div',{style:{fontSize:15,fontWeight:600,lineHeight:1.25,marginBottom:6,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}},r.name),h('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},r.calories!=null?h('span',{style:{display:'inline-flex',padding:'3px 8px',borderRadius:8,background:'var(--obg)',color:'var(--org)',fontSize:11,fontWeight:600}},Math.round(r.calories)+' cal'):null,r.protein!=null?h('span',{style:{display:'inline-flex',padding:'3px 8px',borderRadius:8,background:'var(--gbg)',color:'var(--grn)',fontSize:11,fontWeight:600}},Math.round(r.protein)+'g prot'):null)))}
 
-/* ========== GENRE TILE ========== */
+/* ===== GENRE TILE ===== */
 function GTile(p){var g=p.genre,tr=ur(null);return h('div',{onClick:p.onClick,onTouchStart:function(){if(p.onLongPress)tr.current=setTimeout(p.onLongPress,500)},onTouchEnd:function(){clearTimeout(tr.current)},onTouchMove:function(){clearTimeout(tr.current)},className:'fi',style:{display:'flex',alignItems:'center',padding:16,background:'var(--card)',borderRadius:14,border:'1px solid var(--brd)',cursor:'pointer',marginBottom:8}},h('div',{style:{width:48,height:48,borderRadius:12,background:'var(--bg)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,flexShrink:0}},g.emoji||'\uD83C\uDF7D\uFE0F'),h('div',{style:{flex:1,marginLeft:14}},h('div',{style:{fontSize:16,fontWeight:600}},g.name),h('div',{style:{fontSize:13,color:'var(--text2)'}},p.count+' recipe'+(p.count!==1?'s':''))),h(Ic,{name:'chevron',size:20,color:'var(--text2)'}))}
 
-/* ========== COOKING DIARY ========== */
+/* ===== DIARY (with scan option, collapsible comment) ===== */
 function Diary(p){
-  var D=useData();
-  var _e=us([]),entries=_e[0],setE=_e[1];
-  var _ld=us(true),ld=_ld[0],setLd=_ld[1];
-  var _sh=us(false),sh=_sh[0],setSh=_sh[1];
-  var _txt=us(''),txt=_txt[0],setTxt=_txt[1];
-  var _dt=us(new Date().toISOString().split('T')[0]),dt=_dt[0],setDt=_dt[1];
-  var _img=us(null),img=_img[0],setImg=_img[1];
+  var D=useData();var _e=us([]),E=_e[0],sE=_e[1];var _ld=us(true),ld=_ld[0],sLd=_ld[1];
+  var _sh=us(false),sh=_sh[0],sSh=_sh[1];var _txt=us(''),txt=_txt[0],sTxt=_txt[1];
+  var _dt=us(new Date().toISOString().split('T')[0]),dt=_dt[0],sDt=_dt[1];
+  var _img=us(null),img=_img[0],sImg=_img[1];var _scan=us(null),scanR=_scan[0],sScan=_scan[1];
+  var _scanning=us(false),scanning=_scanning[0],sScanning=_scanning[1];
+  var _showComment=us(false),showC=_showComment[0],sShowC=_showComment[1];
   var fRef=ur(null);
-  var load=uc(async function(){var e=await D.getDiary(p.recipeId);setE(e);setLd(false)},[p.recipeId]);
+  var load=uc(async function(){var e=await D.getDiary(p.recipeId);sE(e);sLd(false)},[p.recipeId]);
   ue(function(){load()},[load]);
-  async function addEntry(){
-    var entry={id:uid(),recipeId:p.recipeId,date:new Date(dt).getTime(),comment:txt.trim(),image:img,createdAt:Date.now()};
-    await D.addDiary(entry);setTxt('');setImg(null);setDt(new Date().toISOString().split('T')[0]);setSh(false);await load();
-  }
-  async function delEntry(id){if(confirm('Delete this diary entry?')){await D.delDiary(id);await load()}}
-  async function pickImg(e){var f=e.target.files[0];if(f){var d=await f2d(f);setImg(d)}e.target.value=''}
+  async function addEntry(){var entry={id:uid(),recipeId:p.recipeId,date:new Date(dt).getTime(),comment:txt.trim()||null,image:img,scan:scanR,createdAt:Date.now()};await D.addDiary(entry);sTxt('');sImg(null);sScan(null);sDt(new Date().toISOString().split('T')[0]);sSh(false);sShowC(false);await load()}
+  async function delE(id){if(confirm('Delete entry?')){await D.delDiary(id);await load()}}
+  async function pickImg(e){var f=e.target.files[0];if(f){var d=await f2d(f);sImg(d)}e.target.value=''}
+  async function doScan(){if(!img)return;sScanning(true);var r=await scanMeal(img,txt.trim()||null);if(r.error){alert(r.error)}else{sScan(r)}sScanning(false)}
   return h('div',{style:{marginTop:28}},
-    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
-      h('div',{style:{fontSize:18,fontWeight:700,fontFamily:'var(--serif)',display:'flex',alignItems:'center',gap:8}},h(Ic,{name:'book',size:20}),' Cooking Diary'),
-      h('button',{onClick:function(){setSh(true)},style:{color:'var(--pri)',fontSize:14,fontWeight:600,display:'flex',alignItems:'center',gap:4}},h(Ic,{name:'plus',size:16,color:'var(--pri)'}),' Add Entry')
-    ),
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},h('div',{style:{fontSize:18,fontWeight:700,fontFamily:'var(--serif)',display:'flex',alignItems:'center',gap:8}},h(Ic,{name:'book',size:20}),' Cooking Diary'),h('button',{onClick:function(){sSh(true)},style:{color:'var(--pri)',fontSize:14,fontWeight:600,display:'flex',alignItems:'center',gap:4}},h(Ic,{name:'plus',size:16,color:'var(--pri)'}),' Add')),
     ld?h('div',{style:{textAlign:'center',padding:20}},h('div',{className:'sp spd'})):
-    entries.length===0?h('div',{style:{padding:20,background:'var(--bg)',borderRadius:12,color:'var(--text2)',fontSize:14,textAlign:'center'}},'No diary entries yet. Track when you cook this recipe!'):
-    entries.map(function(e){return h('div',{key:e.id,className:'fi',style:{background:'var(--card)',border:'1px solid var(--brd)',borderRadius:14,marginBottom:10,overflow:'hidden'}},
+    E.length===0?h('div',{style:{padding:20,background:'var(--bg)',borderRadius:12,color:'var(--text2)',fontSize:14,textAlign:'center'}},'No entries yet.'):
+    E.map(function(e){return h('div',{key:e.id,className:'fi',style:{background:'var(--card)',border:'1px solid var(--brd)',borderRadius:14,marginBottom:10,overflow:'hidden'}},
       e.image?h('img',{src:e.image,style:{width:'100%',height:180,objectFit:'cover',display:'block'}}):null,
       h('div',{style:{padding:14}},
-        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:e.comment?8:0}},
-          h('div',{style:{display:'flex',alignItems:'center',gap:8}},h(Ic,{name:'calendar',size:16,color:'var(--pri)'}),h('span',{style:{fontSize:14,fontWeight:600,color:'var(--pri)'}},fmtDate(e.date))),
-          h('button',{onClick:function(){delEntry(e.id)},style:{padding:4}},h(Ic,{name:'trash',size:14,color:'var(--text2)'}))
-        ),
-        e.comment?h('div',{style:{fontSize:15,lineHeight:1.5,color:'var(--text)'}},e.comment):null
-      )
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:e.comment||e.scan?8:0}},h('div',{style:{display:'flex',alignItems:'center',gap:8}},h(Ic,{name:'calendar',size:16,color:'var(--pri)'}),h('span',{style:{fontSize:14,fontWeight:600,color:'var(--pri)'}},fmtDate(e.date))),h('button',{onClick:function(){delE(e.id)},style:{padding:4}},h(Ic,{name:'trash',size:14,color:'var(--text2)'}))),
+        e.scan?h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',marginBottom:e.comment?8:0,padding:'8px 10px',background:'var(--obg)',borderRadius:10,fontSize:13}},h('span',null,'\uD83D\uDD25 ',e.scan.calories,' cal'),h('span',null,'\uD83E\uDD69 ',e.scan.protein,'g P'),h('span',null,'\uD83C\uDF5E ',e.scan.carbs,'g C'),h('span',null,'\uD83E\uDDC8 ',e.scan.fat,'g F'),e.scan.description?h('div',{style:{width:'100%',fontSize:12,color:'var(--text2)',marginTop:2}},e.scan.description):null):null,
+        e.comment?h('div',{style:{fontSize:15,lineHeight:1.5}},e.comment):null)
     )}),
-    // Add entry sheet
-    h(Sheet,{open:sh,onClose:function(){setSh(false)}},
+    // Add diary entry sheet
+    h(Sheet,{open:sh,onClose:function(){sSh(false)}},
       h('div',{style:{fontSize:20,fontWeight:700,marginBottom:20}},'New Diary Entry'),
-      h('div',{style:lbl},'DATE'),
-      h('input',{type:'date',value:dt,onChange:function(e){setDt(e.target.value)},style:Object.assign({},inp,{marginBottom:16})}),
-      h('div',{style:lbl},'PHOTO (OPTIONAL)'),
-      img?h('div',{style:{position:'relative',marginBottom:16}},h('img',{src:img,style:{width:'100%',height:160,objectFit:'cover',borderRadius:12}}),h('button',{onClick:function(){setImg(null)},style:{position:'absolute',top:8,right:8,width:28,height:28,borderRadius:14,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'close',size:14,color:'#fff'}))):
-      h('button',{onClick:function(){fRef.current.click()},style:{width:'100%',padding:20,borderRadius:12,border:'1px dashed var(--brd)',display:'flex',flexDirection:'column',alignItems:'center',gap:6,color:'var(--text2)',marginBottom:16}},h(Ic,{name:'camera',size:24,color:'var(--text2)'}),'Add photo'),
+      h('div',{style:lbl},'DATE'),h('input',{type:'date',value:dt,onChange:function(e){sDt(e.target.value)},style:Object.assign({},inp,{marginBottom:16})}),
+      h('div',{style:lbl},'PHOTO'),
+      img?h('div',{style:{position:'relative',marginBottom:8}},h('img',{src:img,style:{width:'100%',height:160,objectFit:'cover',borderRadius:12}}),h('button',{onClick:function(){sImg(null);sScan(null)},style:{position:'absolute',top:8,right:8,width:28,height:28,borderRadius:14,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'close',size:14,color:'#fff'}))):
+      h('button',{onClick:function(){fRef.current.click()},style:{width:'100%',padding:20,borderRadius:12,border:'1px dashed var(--brd)',display:'flex',flexDirection:'column',alignItems:'center',gap:6,color:'var(--text2)',marginBottom:8}},h(Ic,{name:'camera',size:24,color:'var(--text2)'}),'Upload photo'),
       h('input',{ref:fRef,type:'file',accept:'image/*',onChange:pickImg,style:{display:'none'}}),
-      h('div',{style:lbl},'COMMENT (OPTIONAL)'),
-      h('textarea',{value:txt,onChange:function(e){setTxt(e.target.value)},placeholder:'How did it turn out? Any changes you made?',rows:3,style:Object.assign({},inp,{resize:'vertical',lineHeight:1.5,marginBottom:20})}),
-      h('button',{onClick:addEntry,style:{padding:'14px 24px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,width:'100%'}},'Save Entry')
-    )
+      // Scan button
+      img?h('button',{onClick:doScan,disabled:scanning,style:{width:'100%',padding:'10px',borderRadius:12,background:scanR?'var(--gbg)':'var(--obg)',color:scanR?'var(--grn)':'var(--org)',fontSize:14,fontWeight:600,marginBottom:8,display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:scanning?0.6:1}},scanning?h('div',{className:'sp spd'}):scanR?h(F,null,'\u2705 Scanned: ',scanR.calories,' cal'):h(F,null,h(Ic,{name:'scan',size:18,color:'var(--org)'}),' Analyze meal with AI')):null,
+      // Collapsible comment
+      h('button',{onClick:function(){sShowC(!showC)},style:{display:'flex',alignItems:'center',gap:6,color:'var(--text2)',fontSize:14,fontWeight:500,marginTop:8,marginBottom:showC?8:16}},h(Ic,{name:'chevDown',size:16,color:'var(--text2)',style:{transform:showC?'rotate(180deg)':'none',transition:'transform .2s'}}),' Add comment'),
+      showC?h('textarea',{value:txt,onChange:function(e){sTxt(e.target.value)},placeholder:'How did it turn out? Portion size?',rows:3,style:Object.assign({},inp,{resize:'vertical',lineHeight:1.5,marginBottom:16})}):null,
+      h('button',{onClick:addEntry,style:{padding:'14px 24px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,width:'100%'}},'Save Entry'))
+  );
+}
+</script>
+<script>
+/* ===== GENRES SCREEN ===== */
+function SGenres(p){var D=useData();var _sf=us(false),sf=_sf[0],sSf=_sf[1];var _eg=us(null),eg=_eg[0],sEg=_eg[1];var _so=us(null),so=_so[0],sSo=_so[1];var _n=us(''),nm=_n[0],sNm=_n[1];var _e=us(''),em=_e[0],sEm=_e[1];
+  function cnt(gid){return D.recipes.filter(function(r){return r.genreId===gid&&!r.hidden}).length}
+  var unc=D.recipes.filter(function(r){return!r.genreId&&!r.hidden}).length;
+  function opn(g){sEg(g||null);sNm(g?g.name:'');sEm(g?(g.emoji||''):'');sSf(true);sSo(null)}
+  function sav(){if(!nm.trim())return;var g=eg?Object.assign({},eg,{name:nm.trim(),emoji:em.trim()||null}):{id:uid(),name:nm.trim(),emoji:em.trim()||null,createdAt:Date.now()};D.saveGenre(g);sSf(false)}
+  function del(g){if(confirm('Delete "'+g.name+'"?')){D.delGenre(g.id);sSo(null)}}
+  var body;
+  if(D.genres.length===0&&unc===0){body=h('div',{style:{textAlign:'center',padding:'60px 40px'}},h(Ic,{name:'folder',size:56,color:'var(--text2)'}),h('div',{style:{fontSize:20,fontWeight:600,marginTop:16}},'No genres yet'),h('div',{style:{fontSize:15,color:'var(--text2)',marginTop:8,lineHeight:1.5}},'Create genres to organize your recipes.'),h('button',{onClick:function(){opn()},style:{padding:'12px 20px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,marginTop:20,display:'inline-flex',alignItems:'center',gap:6}},h(Ic,{name:'plus',size:18,color:'#fff'}),' Create Genre'))}
+  else{var tiles=D.genres.map(function(g){return h(GTile,{key:g.id,genre:g,count:cnt(g.id),onClick:function(){p.onOpenGenre(g)},onLongPress:function(){sSo(g)}})});if(unc>0)tiles.push(h(GTile,{key:'_u',genre:{name:'Uncategorized',emoji:'\uD83D\uDCCB'},count:unc,onClick:function(){p.onOpenGenre({id:null,name:'Uncategorized'})}}));body=h('div',{style:{padding:'0 16px'}},tiles)}
+  return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},h('div',{style:topBar},h('div',{style:{fontFamily:'var(--serif)',fontSize:26,flex:1}},'Genres'),h('button',{onClick:function(){opn()},style:{color:'var(--pri)'}},h(Ic,{name:'plus',size:24}))),h('div',{style:Object.assign({},scr,{paddingBottom:'calc(var(--sb) + 80px)'})},body),h('button',{onClick:function(){p.onAdd()},style:fabS},h(Ic,{name:'plus',size:26,color:'#fff'})),h(Sheet,{open:sf,onClose:function(){sSf(false)}},h('div',{style:{fontSize:20,fontWeight:700,marginBottom:20}},eg?'Edit Genre':'New Genre'),h('div',{style:{display:'flex',gap:10,marginBottom:20}},h('input',{value:em,onChange:function(e){sEm(e.target.value)},placeholder:'\uD83C\uDF7D\uFE0F',style:{width:64,textAlign:'center',fontSize:28,padding:8,borderRadius:12,border:'1px solid var(--brd)',background:'var(--card)',outline:'none'}}),h('input',{value:nm,onChange:function(e){sNm(e.target.value)},placeholder:'e.g. Italian...',autoFocus:true,style:Object.assign({},inp,{flex:1})})),h('button',{onClick:sav,style:{padding:'12px 24px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,width:'100%'}},eg?'Save':'Create')),h(Sheet,{open:!!so,onClose:function(){sSo(null)}},h('button',{onClick:function(){opn(so)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16}},h(Ic,{name:'edit',size:20}),' Edit'),h('button',{onClick:function(){del(so)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16,color:'#e53935'}},h(Ic,{name:'trash',size:20,color:'#e53935'}),' Delete')))}
+
+/* ===== ALL RECIPES (sorting, hidden toggle) ===== */
+function SAll(p){
+  var D=useData();var _s=us(''),sr=_s[0],sSr=_s[1];var _g=us(false),grp=_g[0],sGrp=_g[1];
+  var _sort=us('recent'),sort=_sort[0],sSort=_sort[1];var _showSort=us(false),shSort=_showSort[0],sShSort=_showSort[1];
+  var _showHidden=us(false),showH=_showHidden[0],sShowH=_showHidden[1];
+  var filt=D.recipes.filter(function(r){if(!showH&&r.hidden)return false;if(sr.trim()){return r.name.toLowerCase().includes(sr.toLowerCase())}return true});
+  // Sort
+  var sorted=filt.slice();
+  if(sort==='alpha')sorted.sort(function(a,b){return a.name.localeCompare(b.name)});
+  else if(sort==='protein')sorted.sort(function(a,b){return(b.protein||0)-(a.protein||0)});
+  else if(sort==='carbs')sorted.sort(function(a,b){return(b.carbs||0)-(a.carbs||0)});
+  else if(sort==='calories')sorted.sort(function(a,b){return(b.calories||0)-(a.calories||0)});
+  else sorted.sort(function(a,b){return(b.updatedAt||0)-(a.updatedAt||0)});
+  var sortLabels={recent:'Last changed',alpha:'A \u2192 Z',protein:'Protein',carbs:'Carbs',calories:'Calories'};
+  function grid(list){return h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,padding:'0 16px'}},list.map(function(r){return h(RCard,{key:r.id,recipe:r,onClick:function(){p.onOpenRecipe(r)}})}))}
+  var body;
+  if(sorted.length===0)body=h('div',{style:{textAlign:'center',padding:40,color:'var(--text2)'}},h(Ic,{name:'search',size:40,color:'var(--text2)'}),h('div',{style:{marginTop:12,fontSize:16}},sr?'No results':'No recipes yet'));
+  else if(grp){var secs=[];D.genres.forEach(function(g){var l=sorted.filter(function(r){return r.genreId===g.id});if(l.length)secs.push(h('div',{key:g.id},h('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'16px 16px 10px',fontSize:17,fontWeight:700}},(g.emoji||'\uD83C\uDF7D\uFE0F')+' '+g.name),grid(l)))});var uc2=sorted.filter(function(r){return!r.genreId});if(uc2.length)secs.push(h('div',{key:'_u'},h('div',{style:{padding:'16px 16px 10px',fontSize:17,fontWeight:700}},'\uD83D\uDCCB Uncategorized'),grid(uc2)));body=h(F,null,secs)}
+  else body=grid(sorted);
+  var hiddenCount=D.recipes.filter(function(r){return r.hidden}).length;
+  return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},
+    h('div',{style:topBar},h('div',{style:{fontFamily:'var(--serif)',fontSize:26,flex:1}},'All Recipes'),h('button',{onClick:function(){sShSort(true)},style:{color:'var(--text2)',marginRight:4}},h(Ic,{name:'sort',size:22})),h('button',{onClick:function(){sGrp(!grp)},style:{color:'var(--text2)'}},h(Ic,{name:grp?'grid':'folder',size:22}))),
+    h('div',{style:Object.assign({},scr,{paddingBottom:'calc(var(--sb) + 80px)'})},
+      h('div',{style:{padding:'0 16px 8px',position:'relative'}},h('div',{style:{position:'absolute',left:28,top:12,pointerEvents:'none'}},h(Ic,{name:'search',size:18,color:'var(--text2)'})),h('input',{value:sr,onChange:function(e){sSr(e.target.value)},placeholder:'Search recipes...',style:Object.assign({},inp,{paddingLeft:42})})),
+      // Sort pill + hidden toggle
+      h('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'0 16px 10px',flexWrap:'wrap'}},
+        h('div',{style:{fontSize:12,color:'var(--text2)',display:'flex',alignItems:'center',gap:4}},h(Ic,{name:'sort',size:14,color:'var(--text2)'}),' ',sortLabels[sort]),
+        hiddenCount>0?h('button',{onClick:function(){sShowH(!showH)},style:{fontSize:12,color:showH?'var(--pri)':'var(--text2)',display:'flex',alignItems:'center',gap:4,padding:'4px 8px',borderRadius:8,background:showH?'rgba(232,93,58,0.1)':'var(--bg)',border:'1px solid var(--brd)'}},h(Ic,{name:showH?'eye':'eyeOff',size:14,color:showH?'var(--pri)':'var(--text2)'}),showH?'Showing hidden':''+hiddenCount+' hidden'):null
+      ),
+      body,h('div',{style:{height:20}})
+    ),
+    h('button',{onClick:function(){p.onAdd()},style:fabS},h(Ic,{name:'plus',size:26,color:'#fff'})),
+    // Sort sheet
+    h(Sheet,{open:shSort,onClose:function(){sShSort(false)}},h('div',{style:{fontSize:20,fontWeight:700,marginBottom:16}},'Sort By'),['recent','alpha','protein','carbs','calories'].map(function(k){return h('button',{key:k,onClick:function(){sSort(k);sShSort(false)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16,color:sort===k?'var(--pri)':'var(--text)',fontWeight:sort===k?700:400}},sort===k?'\u2713 ':' ',sortLabels[k])}))
   );
 }
 
-/* ========== NUTRITION ITEM ========== */
-function NI(p){return h('div',{style:{textAlign:'center'}},h('div',{style:{fontSize:11,color:'var(--text2)',fontWeight:500}},p.label),h('div',{style:{marginTop:4}},h('span',{style:{fontSize:22,fontWeight:800,color:p.color}},p.value),h('span',{style:{fontSize:12,fontWeight:500,color:p.color,opacity:0.7}},' '+p.unit)))}
+/* ===== GENRE RECIPES ===== */
+function SGR(p){var D=useData();var list=D.recipes.filter(function(r){return(p.genre.id?r.genreId===p.genre.id:!r.genreId)&&!r.hidden});return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},h('div',{style:topBar},h('button',{onClick:p.onBack},h(Ic,{name:'back',size:24})),h('div',{style:{fontFamily:'var(--serif)',fontSize:22,flex:1}},p.genre.name)),h('div',{style:Object.assign({},scr,{paddingBottom:'calc(var(--sb) + 80px)'})},list.length===0?h('div',{style:{textAlign:'center',padding:'60px 40px',color:'var(--text2)'}},h(Ic,{name:'food',size:48,color:'var(--text2)'}),h('div',{style:{marginTop:12,fontSize:16}},'No recipes here yet')):h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,padding:'0 16px'}},list.map(function(r){return h(RCard,{key:r.id,recipe:r,onClick:function(){p.onOpenRecipe(r)}})}))),h('button',{onClick:function(){p.onCreateRecipe(p.genre.id)},style:Object.assign({},fabS,{bottom:'calc(var(--sb) + 20px)'})},h(Ic,{name:'plus',size:26,color:'#fff'})))}
 </script>
 <script>
-/* ========== GENRES SCREEN ========== */
-function SGenres(p){
-  var D=useData();var _sf=us(false),sf=_sf[0],setSf=_sf[1];var _eg=us(null),eg=_eg[0],setEg=_eg[1];var _so=us(null),so=_so[0],setSo=_so[1];var _n=us(''),nm=_n[0],setNm=_n[1];var _e=us(''),em=_e[0],setEm=_e[1];
-  function cnt(gid){return D.recipes.filter(function(r){return r.genreId===gid}).length}
-  var unc=D.recipes.filter(function(r){return!r.genreId}).length;
-  function opn(g){setEg(g||null);setNm(g?g.name:'');setEm(g?(g.emoji||''):'');setSf(true);setSo(null)}
-  function sav(){if(!nm.trim())return;var g=eg?Object.assign({},eg,{name:nm.trim(),emoji:em.trim()||null}):{id:uid(),name:nm.trim(),emoji:em.trim()||null,createdAt:Date.now()};D.saveGenre(g);setSf(false)}
-  function del(g){if(confirm('Delete "'+g.name+'"?')){D.delGenre(g.id);setSo(null)}}
-  var body;
-  if(D.genres.length===0&&unc===0){body=h('div',{style:{textAlign:'center',padding:'60px 40px'}},h(Ic,{name:'folder',size:56,color:'var(--text2)'}),h('div',{style:{fontSize:20,fontWeight:600,marginTop:16}},'No genres yet'),h('div',{style:{fontSize:15,color:'var(--text2)',marginTop:8,lineHeight:1.5}},'Create genres to organize your recipes.'),h('button',{onClick:function(){opn()},style:{padding:'12px 20px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,marginTop:20,display:'inline-flex',alignItems:'center',gap:6}},h(Ic,{name:'plus',size:18,color:'#fff'}),' Create Genre'))}
-  else{var tiles=D.genres.map(function(g){return h(GTile,{key:g.id,genre:g,count:cnt(g.id),onClick:function(){p.onOpenGenre(g)},onLongPress:function(){setSo(g)}})});if(unc>0)tiles.push(h(GTile,{key:'_u',genre:{name:'Uncategorized',emoji:'\uD83D\uDCCB'},count:unc,onClick:function(){p.onOpenGenre({id:null,name:'Uncategorized'})}}));body=h('div',{style:{padding:'0 16px'}},tiles)}
-  return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},h('div',{style:topBar},h('div',{style:{fontFamily:'var(--serif)',fontSize:26,flex:1}},'Genres'),h('button',{onClick:function(){opn()},style:{color:'var(--pri)'}},h(Ic,{name:'plus',size:24}))),h('div',{style:Object.assign({},scr,{paddingBottom:'calc(var(--sb) + 80px)'})},body),h('button',{onClick:p.onCreateRecipe,style:fab},h(Ic,{name:'plus',size:26,color:'#fff'})),h(Sheet,{open:sf,onClose:function(){setSf(false)}},h('div',{style:{fontSize:20,fontWeight:700,marginBottom:20}},eg?'Edit Genre':'New Genre'),h('div',{style:{display:'flex',gap:10,marginBottom:20}},h('input',{value:em,onChange:function(e){setEm(e.target.value)},placeholder:'\uD83C\uDF7D\uFE0F',style:{width:64,textAlign:'center',fontSize:28,padding:8,borderRadius:12,border:'1px solid var(--brd)',background:'var(--card)',outline:'none'}}),h('input',{value:nm,onChange:function(e){setNm(e.target.value)},placeholder:'e.g. Italian, Desserts...',autoFocus:true,style:Object.assign({},inp,{flex:1})})),h('button',{onClick:sav,style:{padding:'12px 24px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,width:'100%'}},eg?'Save':'Create')),h(Sheet,{open:!!so,onClose:function(){setSo(null)}},h('button',{onClick:function(){opn(so)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16}},h(Ic,{name:'edit',size:20}),' Edit Genre'),h('button',{onClick:function(){del(so)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16,color:'#e53935'}},h(Ic,{name:'trash',size:20,color:'#e53935'}),' Delete Genre')))}
-
-/* ========== ALL RECIPES ========== */
-function SAll(p){
-  var D=useData();var _s=us(''),sr=_s[0],setSr=_s[1];var _g=us(false),grp=_g[0],setGrp=_g[1];
-  var filt=D.recipes;if(sr.trim()){var q=sr.toLowerCase();filt=D.recipes.filter(function(r){return r.name.toLowerCase().includes(q)})}
-  function grid(list){return h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,padding:'0 16px'}},list.map(function(r){return h(RCard,{key:r.id,recipe:r,onClick:function(){p.onOpenRecipe(r)}})}))}
-  var body;
-  if(filt.length===0)body=h('div',{style:{textAlign:'center',padding:40,color:'var(--text2)'}},h(Ic,{name:'search',size:40,color:'var(--text2)'}),h('div',{style:{marginTop:12,fontSize:16}},sr?'No results':'No recipes yet'));
-  else if(grp){var secs=[];D.genres.forEach(function(g){var l=filt.filter(function(r){return r.genreId===g.id});if(l.length)secs.push(h('div',{key:g.id},h('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'16px 16px 10px',fontSize:17,fontWeight:700}},(g.emoji||'\uD83C\uDF7D\uFE0F')+' '+g.name),grid(l)))});var uc=filt.filter(function(r){return!r.genreId});if(uc.length)secs.push(h('div',{key:'_u'},h('div',{style:{padding:'16px 16px 10px',fontSize:17,fontWeight:700}},'\uD83D\uDCCB Uncategorized'),grid(uc)));body=h(F,null,secs)}
-  else body=grid(filt);
-  return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},h('div',{style:topBar},h('div',{style:{fontFamily:'var(--serif)',fontSize:26,flex:1}},'All Recipes'),h('button',{onClick:function(){setGrp(!grp)},style:{color:'var(--text2)'}},h(Ic,{name:grp?'grid':'folder',size:22}))),h('div',{style:Object.assign({},scr,{paddingBottom:'calc(var(--sb) + 80px)'})},h('div',{style:{padding:'0 16px 12px',position:'relative'}},h('div',{style:{position:'absolute',left:28,top:12,pointerEvents:'none'}},h(Ic,{name:'search',size:18,color:'var(--text2)'})),h('input',{value:sr,onChange:function(e){setSr(e.target.value)},placeholder:'Search recipes...',style:Object.assign({},inp,{paddingLeft:42})})),body),h('button',{onClick:p.onCreateRecipe,style:fab},h(Ic,{name:'plus',size:26,color:'#fff'})))}
-
-/* ========== GENRE RECIPES ========== */
-function SGR(p){var D=useData();var list=D.recipes.filter(function(r){return p.genre.id?r.genreId===p.genre.id:!r.genreId});return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},h('div',{style:topBar},h('button',{onClick:p.onBack},h(Ic,{name:'back',size:24})),h('div',{style:{fontFamily:'var(--serif)',fontSize:22,flex:1}},p.genre.name)),h('div',{style:Object.assign({},scr,{paddingBottom:'calc(var(--sb) + 80px)'})},list.length===0?h('div',{style:{textAlign:'center',padding:'60px 40px',color:'var(--text2)'}},h(Ic,{name:'food',size:48,color:'var(--text2)'}),h('div',{style:{marginTop:12,fontSize:16}},'No recipes here yet')):h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,padding:'0 16px'}},list.map(function(r){return h(RCard,{key:r.id,recipe:r,onClick:function(){p.onOpenRecipe(r)}})}))),h('button',{onClick:function(){p.onCreateRecipe(p.genre.id)},style:Object.assign({},fab,{bottom:'calc(var(--sb) + 20px)'})},h(Ic,{name:'plus',size:26,color:'#fff'})))}
-
-/* ========== RECIPE DETAIL ========== */
+/* ===== RECIPE DETAIL (servings adjuster, cover picker, hidden toggle) ===== */
 function SDet(p){
-  var D=useData();var recipe=D.recipes.find(function(r){return r.id===p.recipe.id})||p.recipe;var genre=D.genres.find(function(g){return g.id===recipe.genreId});var _m=us(false),menu=_m[0],setMenu=_m[1];var _i=us(0),ii=_i[0],setII=_i[1];
+  var D=useData();var recipe=D.recipes.find(function(r){return r.id===p.recipe.id})||p.recipe;var genre=D.genres.find(function(g){return g.id===recipe.genreId});
+  var _m=us(false),menu=_m[0],sMenu=_m[1];var _i=us(0),ii=_i[0],sII=_i[1];
+  var defServ=recipe.servings||1;var _sv=us(defServ),sv=_sv[0],sSv=_sv[1];
   var imgs=(recipe.images||[]).slice();var yt=ytT(recipe.youtubeUrl);if(yt)imgs.push(yt);
   var hasN=recipe.calories!=null||recipe.protein!=null||recipe.carbs!=null||recipe.fat!=null;
   var steps=[];if(recipe.instructions){steps=Array.isArray(recipe.instructions)?recipe.instructions:recipe.instructions.split('\n').filter(function(s){return s.trim()})}
-  var hb=imgs.length>0;
-  // Touch swipe for images
-  var touchX=ur(0);
-  function onTS(e){touchX.current=e.touches[0].clientX}
-  function onTE(e){var dx=e.changedTouches[0].clientX-touchX.current;if(Math.abs(dx)>40){if(dx<0&&ii<imgs.length-1)setII(ii+1);if(dx>0&&ii>0)setII(ii-1)}}
+  var hb=imgs.length>0;var tX=ur(0);
+  function onTS(e){tX.current=e.touches[0].clientX}
+  function onTE(e){var dx=e.changedTouches[0].clientX-tX.current;if(Math.abs(dx)>40){if(dx<0&&ii<imgs.length-1)sII(ii+1);if(dx>0&&ii>0)sII(ii-1)}}
+  var mult=sv/defServ;
+  // Cover picker
+  var _showCover=us(false),shCov=_showCover[0],sShCov=_showCover[1];
+  function setCover(idx){var r2=Object.assign({},recipe,{coverIndex:idx});D.saveRecipe(r2);sShCov(false)}
+  function toggleHidden(){var r2=Object.assign({},recipe,{hidden:!recipe.hidden});D.saveRecipe(r2)}
   return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},h('div',{style:Object.assign({},scr,{paddingBottom:'calc(var(--sb) + 20px)'})},
-    // Images
-    imgs.length>0?h('div',{style:{position:'relative',aspectRatio:'4/3',background:'#F5EDE6',touchAction:'pan-y'},onTouchStart:onTS,onTouchEnd:onTE},h('img',{src:imgs[ii],alt:'',style:{width:'100%',height:'100%',objectFit:'cover',pointerEvents:'none'}}),imgs.length>1?h('div',{style:{position:'absolute',bottom:12,left:'50%',transform:'translateX(-50%)',display:'flex',gap:6}},imgs.map(function(_,i){return h('div',{key:i,onClick:function(){setII(i)},style:{width:i===ii?20:6,height:6,borderRadius:3,background:i===ii?'#fff':'rgba(255,255,255,0.5)',cursor:'pointer',transition:'width .2s'}})})):null):null,
+    // Images with swipe
+    imgs.length>0?h('div',{style:{position:'relative',aspectRatio:'4/3',background:'#F5EDE6',touchAction:'pan-y'},onTouchStart:onTS,onTouchEnd:onTE},h('img',{src:imgs[ii],alt:'',style:{width:'100%',height:'100%',objectFit:'cover',pointerEvents:'none'}}),imgs.length>1?h('div',{style:{position:'absolute',bottom:12,left:'50%',transform:'translateX(-50%)',display:'flex',gap:6}},imgs.map(function(_,i){return h('div',{key:i,onClick:function(){sII(i)},style:{width:i===ii?20:6,height:6,borderRadius:3,background:i===ii?'#fff':'rgba(255,255,255,0.5)',cursor:'pointer',transition:'width .2s'}})})):null):null,
     // Nav
-    h('div',{style:{position:'fixed',top:0,left:0,right:0,display:'flex',justifyContent:'space-between',padding:'12px 16px',paddingTop:'calc(var(--st) + 12px)',zIndex:10,background:hb?'linear-gradient(rgba(0,0,0,0.3),transparent)':'var(--bg)'}},h('button',{onClick:p.onBack,style:{width:36,height:36,borderRadius:18,background:hb?'rgba(0,0,0,0.3)':'var(--card)',display:'flex',alignItems:'center',justifyContent:'center',border:hb?'none':'1px solid var(--brd)'}},h(Ic,{name:'back',size:20,color:hb?'#fff':'var(--text)'})),h('button',{onClick:function(){setMenu(true)},style:{width:36,height:36,borderRadius:18,background:hb?'rgba(0,0,0,0.3)':'var(--card)',display:'flex',alignItems:'center',justifyContent:'center',border:hb?'none':'1px solid var(--brd)'}},h(Ic,{name:'more',size:20,color:hb?'#fff':'var(--text)'}))),
-    // Content
+    h('div',{style:{position:'fixed',top:0,left:0,right:0,display:'flex',justifyContent:'space-between',padding:'12px 16px',paddingTop:'calc(var(--st) + 12px)',zIndex:10,background:hb?'linear-gradient(rgba(0,0,0,0.3),transparent)':'var(--bg)'}},h('button',{onClick:p.onBack,style:{width:36,height:36,borderRadius:18,background:hb?'rgba(0,0,0,0.3)':'var(--card)',display:'flex',alignItems:'center',justifyContent:'center',border:hb?'none':'1px solid var(--brd)'}},h(Ic,{name:'back',size:20,color:hb?'#fff':'var(--text)'})),h('button',{onClick:function(){sMenu(true)},style:{width:36,height:36,borderRadius:18,background:hb?'rgba(0,0,0,0.3)':'var(--card)',display:'flex',alignItems:'center',justifyContent:'center',border:hb?'none':'1px solid var(--brd)'}},h(Ic,{name:'more',size:20,color:hb?'#fff':'var(--text)'}))),
     h('div',{style:{padding:20}},
       h('h1',{style:{fontFamily:'var(--serif)',fontSize:28,fontWeight:400,lineHeight:1.2}},recipe.name),
-      genre?h('span',{style:{display:'inline-block',marginTop:10,padding:'5px 10px',borderRadius:8,background:'rgba(232,93,58,0.1)',color:'var(--pri)',fontSize:13,fontWeight:600}},(genre.emoji||'\uD83C\uDF7D\uFE0F')+' '+genre.name):null,
+      recipe.hidden?h('span',{style:{display:'inline-block',marginTop:6,padding:'4px 8px',borderRadius:6,background:'rgba(0,0,0,0.06)',color:'var(--text2)',fontSize:12,fontWeight:600}},'\uD83D\uDEAB Hidden'):null,
+      genre?h('span',{style:{display:'inline-block',marginTop:10,marginLeft:recipe.hidden?6:0,padding:'5px 10px',borderRadius:8,background:'rgba(232,93,58,0.1)',color:'var(--pri)',fontSize:13,fontWeight:600}},(genre.emoji||'\uD83C\uDF7D\uFE0F')+' '+genre.name):null,
       // Nutrition
       hasN?h('div',{style:{display:'flex',justifyContent:'space-around',padding:16,marginTop:20,background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)'}},recipe.calories!=null?h(NI,{label:'Calories',value:Math.round(recipe.calories),unit:'kcal',color:'var(--org)'}):null,recipe.protein!=null?h(NI,{label:'Protein',value:Math.round(recipe.protein),unit:'g',color:'var(--grn)'}):null,recipe.carbs!=null?h(NI,{label:'Carbs',value:Math.round(recipe.carbs),unit:'g',color:'var(--blu)'}):null,recipe.fat!=null?h(NI,{label:'Fat',value:Math.round(recipe.fat),unit:'g',color:'var(--yel)'}):null):null,
       // Links
-      (recipe.youtubeUrl||recipe.websiteUrl)?h('div',{style:{marginTop:24}},h('div',{style:{fontSize:18,fontWeight:700,marginBottom:12,fontFamily:'var(--serif)'}},'Links'),recipe.youtubeUrl?h('a',{href:recipe.youtubeUrl,target:'_blank',rel:'noopener',style:{display:'flex',alignItems:'center',gap:12,padding:14,borderRadius:12,background:'rgba(255,0,0,0.06)',marginBottom:8,textDecoration:'none'}},h(Ic,{name:'play',size:22,color:'#e53935'}),h('span',{style:{flex:1,fontSize:15,fontWeight:600,color:'#e53935'}},'Watch on YouTube')):null,recipe.websiteUrl?h('a',{href:recipe.websiteUrl,target:'_blank',rel:'noopener',style:{display:'flex',alignItems:'center',gap:12,padding:14,borderRadius:12,background:'rgba(232,93,58,0.06)',textDecoration:'none'}},h(Ic,{name:'link',size:22,color:'var(--pri)'}),h('span',{style:{flex:1,fontSize:15,fontWeight:600,color:'var(--pri)'}},'View Website')):null):null,
-      // Ingredients
-      recipe.ingredients&&recipe.ingredients.length>0?h('div',{style:{marginTop:28}},h('div',{style:{fontSize:18,fontWeight:700,marginBottom:12,fontFamily:'var(--serif)'}},'Ingredients'),recipe.ingredients.map(function(ing,i){return h('div',{key:i,style:{display:'flex',alignItems:'flex-start',gap:12,marginBottom:8}},h('div',{style:{width:6,height:6,borderRadius:3,background:'var(--pri)',marginTop:8,flexShrink:0}}),h('div',{style:{fontSize:15,lineHeight:1.5}},ing.amount?h('strong',null,ing.amount+' '):null,ing.unit?h('span',{style:{color:'var(--text2)'}},ing.unit+' '):null,ing.name))})):null,
+      (recipe.youtubeUrl||recipe.websiteUrl)?h('div',{style:{marginTop:24}},h('div',{style:{fontSize:18,fontWeight:700,marginBottom:12,fontFamily:'var(--serif)'}},'Links'),recipe.youtubeUrl?h('a',{href:recipe.youtubeUrl,target:'_blank',rel:'noopener',style:{display:'flex',alignItems:'center',gap:12,padding:14,borderRadius:12,background:'rgba(255,0,0,0.06)',marginBottom:8,textDecoration:'none'}},h(Ic,{name:'play',size:22,color:'#e53935'}),h('span',{style:{flex:1,fontSize:15,fontWeight:600,color:'#e53935'}},'YouTube')):null,recipe.websiteUrl?h('a',{href:recipe.websiteUrl,target:'_blank',rel:'noopener',style:{display:'flex',alignItems:'center',gap:12,padding:14,borderRadius:12,background:'rgba(232,93,58,0.06)',textDecoration:'none'}},h(Ic,{name:'link',size:22,color:'var(--pri)'}),h('span',{style:{flex:1,fontSize:15,fontWeight:600,color:'var(--pri)'}},'Website')):null):null,
+      // Ingredients with servings adjuster
+      recipe.ingredients&&recipe.ingredients.length>0?h('div',{style:{marginTop:28}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+          h('div',{style:{fontSize:18,fontWeight:700,fontFamily:'var(--serif)'}},'Ingredients'),
+          h('div',{style:{display:'flex',alignItems:'center',gap:8,background:'var(--card)',border:'1px solid var(--brd)',borderRadius:10,padding:'4px 8px'}},
+            h('button',{onClick:function(){if(sv>1)sSv(sv-1)},style:{width:28,height:28,borderRadius:14,background:sv>1?'var(--pri)':'var(--brd)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'minus',size:14,color:sv>1?'#fff':'var(--text2)'})),
+            h('div',{style:{minWidth:44,textAlign:'center'}},h('div',{style:{fontSize:16,fontWeight:700,color:'var(--text)'}},sv),h('div',{style:{fontSize:9,color:'var(--text2)',marginTop:-2}},sv===defServ?'default':'serv.')),
+            h('button',{onClick:function(){sSv(sv+1)},style:{width:28,height:28,borderRadius:14,background:'var(--pri)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'plus',size:14,color:'#fff'}))
+          )
+        ),
+        recipe.ingredients.map(function(ing,i){var a=parseAmt(ing.amount);var scaled=a!=null?fmtAmt(a*mult):ing.amount;return h('div',{key:i,style:{display:'flex',alignItems:'flex-start',gap:12,marginBottom:8}},h('div',{style:{width:6,height:6,borderRadius:3,background:'var(--pri)',marginTop:8,flexShrink:0}}),h('div',{style:{fontSize:15,lineHeight:1.5}},scaled?h('strong',null,scaled+' '):null,ing.unit?h('span',{style:{color:'var(--text2)'}},ing.unit+' '):null,ing.name))})
+      ):null,
       // Instructions
-      steps.length>0?h('div',{style:{marginTop:28}},h('div',{style:{fontSize:18,fontWeight:700,marginBottom:12,fontFamily:'var(--serif)'}},'Instructions'),h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16}},steps.map(function(step,i){return h('div',{key:i,style:{display:'flex',gap:12,marginBottom:i<steps.length-1?14:0}},h('div',{style:{width:26,height:26,borderRadius:13,background:'var(--pri)',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}},i+1),h('div',{style:{fontSize:15,lineHeight:1.6,flex:1,paddingTop:2}},step))}))):null,
+      steps.length>0?h('div',{style:{marginTop:28}},h('div',{style:{fontSize:18,fontWeight:700,marginBottom:12,fontFamily:'var(--serif)'}},'Instructions'),h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16}},steps.map(function(st,i){return h('div',{key:i,style:{display:'flex',gap:12,marginBottom:i<steps.length-1?14:0}},h('div',{style:{width:26,height:26,borderRadius:13,background:'var(--pri)',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}},i+1),h('div',{style:{fontSize:15,lineHeight:1.6,flex:1,paddingTop:2}},st))}))):null,
       // Diary
       h(Diary,{recipeId:recipe.id})
     )
   ),
   // Menu
-  h(Sheet,{open:menu,onClose:function(){setMenu(false)}},h('button',{onClick:function(){setMenu(false);p.onEdit(recipe)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16}},h(Ic,{name:'edit',size:20}),' Edit Recipe'),h('button',{onClick:function(){D.dupRecipe(recipe);setMenu(false)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16}},h(Ic,{name:'copy',size:20}),' Duplicate'),h('button',{onClick:function(){if(confirm('Delete "'+recipe.name+'"?')){D.delRecipe(recipe.id);p.onBack()}},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16,color:'#e53935'}},h(Ic,{name:'trash',size:20,color:'#e53935'}),' Delete')))}
-
-/* ========== RECIPE FORM ========== */
+  h(Sheet,{open:menu,onClose:function(){sMenu(false)}},
+    h('button',{onClick:function(){sMenu(false);p.onEdit(recipe)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16}},h(Ic,{name:'edit',size:20}),' Edit Recipe'),
+    h('button',{onClick:function(){D.dupRecipe(recipe);sMenu(false)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16}},h(Ic,{name:'copy',size:20}),' Duplicate'),
+    imgs.length>1?h('button',{onClick:function(){sMenu(false);sShCov(true)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16}},h(Ic,{name:'image',size:20}),' Set Cover Photo'):null,
+    h('button',{onClick:function(){toggleHidden();sMenu(false)},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16}},h(Ic,{name:recipe.hidden?'eye':'eyeOff',size:20}),recipe.hidden?' Show Recipe':' Hide Recipe'),
+    h('button',{onClick:function(){if(confirm('Delete?')){D.delRecipe(recipe.id);p.onBack()}},style:{display:'flex',alignItems:'center',gap:12,padding:'14px 0',width:'100%',fontSize:16,color:'#e53935'}},h(Ic,{name:'trash',size:20,color:'#e53935'}),' Delete')
+  ),
+  // Cover picker sheet
+  h(Sheet,{open:shCov,onClose:function(){sShCov(false)}},
+    h('div',{style:{fontSize:20,fontWeight:700,marginBottom:16}},'Choose Cover Photo'),
+    h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}},imgs.map(function(im,i){return h('div',{key:i,onClick:function(){setCover(i)},style:{aspectRatio:'1',borderRadius:12,overflow:'hidden',border:i===(recipe.coverIndex||0)?'3px solid var(--pri)':'3px solid transparent',cursor:'pointer'}},h('img',{src:im,style:{width:'100%',height:'100%',objectFit:'cover'}}))}))
+  ));
+}
+</script>
+<script>
+/* ===== RECIPE FORM (with servings field) ===== */
 function SForm(p){
   var D=useData();var isE=!!p.recipe;
-  var _n=us(isE?p.recipe.name:''),nm=_n[0],setNm=_n[1];
-  var _gi=us(isE?(p.recipe.genreId||''):(p.preG||'')),gi=_gi[0],setGi=_gi[1];
-  var _yt=us(isE?(p.recipe.youtubeUrl||''):''),yt=_yt[0],setYt=_yt[1];
-  var _wu=us(isE?(p.recipe.websiteUrl||''):''),wu=_wu[0],setWu=_wu[1];
-  var _ins=us(isE?(Array.isArray(p.recipe.instructions)?p.recipe.instructions.join('\n'):(p.recipe.instructions||'')):''),ins=_ins[0],setIns=_ins[1];
-  var _cal=us(isE&&p.recipe.calories!=null?''+p.recipe.calories:''),cal=_cal[0],setCal=_cal[1];
-  var _pro=us(isE&&p.recipe.protein!=null?''+p.recipe.protein:''),pro=_pro[0],setPro=_pro[1];
-  var _crb=us(isE&&p.recipe.carbs!=null?''+p.recipe.carbs:''),crb=_crb[0],setCrb=_crb[1];
-  var _fat=us(isE&&p.recipe.fat!=null?''+p.recipe.fat:''),fat=_fat[0],setFat=_fat[1];
-  var _ing=us(isE?(p.recipe.ingredients||[]):[]),ing=_ing[0],setIng=_ing[1];
-  var _im=us(isE?(p.recipe.images||[]):[]),imgs=_im[0],setImgs=_im[1];
-  var _ft=us(false),fetching=_ft[0],setFt=_ft[1];
-  var _fm=us(''),fmsg=_fm[0],setFm=_fm[1];
+  var _n=us(isE?p.recipe.name:''),nm=_n[0],sNm=_n[1];
+  var _gi=us(isE?(p.recipe.genreId||''):(p.preG||'')),gi=_gi[0],sGi=_gi[1];
+  var _yt=us(isE?(p.recipe.youtubeUrl||''):''),yt=_yt[0],sYt=_yt[1];
+  var _wu=us(isE?(p.recipe.websiteUrl||''):''),wu=_wu[0],sWu=_wu[1];
+  var _ins=us(isE?(Array.isArray(p.recipe.instructions)?p.recipe.instructions.join('\n'):(p.recipe.instructions||'')):''),ins=_ins[0],sIns=_ins[1];
+  var _cal=us(isE&&p.recipe.calories!=null?''+p.recipe.calories:''),cal=_cal[0],sCal=_cal[1];
+  var _pro=us(isE&&p.recipe.protein!=null?''+p.recipe.protein:''),pro=_pro[0],sPro=_pro[1];
+  var _crb=us(isE&&p.recipe.carbs!=null?''+p.recipe.carbs:''),crb=_crb[0],sCrb=_crb[1];
+  var _fat=us(isE&&p.recipe.fat!=null?''+p.recipe.fat:''),fat=_fat[0],sFat=_fat[1];
+  var _sv=us(isE?(p.recipe.servings||1):4),sv=_sv[0],sSv=_sv[1];
+  var _ing=us(isE?(p.recipe.ingredients||[]):[]),ing=_ing[0],sIng=_ing[1];
+  var _im=us(isE?(p.recipe.images||[]):[]),imgs=_im[0],sImgs=_im[1];
+  var _ft=us(false),fetching=_ft[0],sFt=_ft[1];var _fm=us(''),fmsg=_fm[0],sFm=_fm[1];
   var fRef=ur(null);
-  function addI(){setIng(ing.concat([{name:'',amount:'',unit:''}]))}
-  function updI(i,k,v){var c=ing.slice();c[i]=Object.assign({},c[i]);c[i][k]=v;setIng(c)}
-  function remI(i){setIng(ing.filter(function(_,x){return x!==i}))}
-  async function pickImg(e){var files=Array.from(e.target.files);for(var i=0;i<files.length;i++){var d=await f2d(files[i]);setImgs(function(prev){return prev.concat([d])})}e.target.value=''}
+  function addI(){sIng(ing.concat([{name:'',amount:'',unit:''}]))}
+  function updI(i,k,v){var c=ing.slice();c[i]=Object.assign({},c[i]);c[i][k]=v;sIng(c)}
+  function remI(i){sIng(ing.filter(function(_,x){return x!==i}))}
+  async function pickImg(e){var files=Array.from(e.target.files);for(var i=0;i<files.length;i++){var d=await f2d(files[i]);sImgs(function(prev){return prev.concat([d])})}e.target.value=''}
   async function doFetch(){
-    var u=yt.trim();if(!u){setFm('Enter a YouTube URL first');return}
-    setFt(true);
-    try{
-      var r=await fetchYT(u,function(msg){setFm(msg)});
-      if(r.error){setFm(r.error);setTimeout(function(){setFm('')},3000);return}
-      if(r.warning){setFm(r.warning);setTimeout(function(){setFm('')},5000)}
-      if(!nm&&r.name)setNm(r.name);
-      // Add thumbnail to images if not already present
-      if(r.thumbnail){setImgs(function(prev){if(prev.indexOf(r.thumbnail)===-1)return prev.concat([r.thumbnail]);return prev})}
-      if(ing.length===0&&r.ingredients&&r.ingredients.length>0)setIng(r.ingredients);
-      if(!ins&&r.instructions&&r.instructions.length>0)setIns(r.instructions.join('\n'));
-      if(!cal&&r.calories)setCal(''+r.calories);
-      if(!pro&&r.protein)setPro(''+r.protein);
-      if(!crb&&r.carbs)setCrb(''+r.carbs);
-      if(!fat&&r.fat)setFat(''+r.fat);
-      if(!r.warning){
-        if(r.mode==='ai')setFm('Recipe extracted with AI!');
-        else setFm('Got title & thumbnail. Add API key in Settings for full extraction.');
-      }
-    }catch(e){setFm('Failed: '+e.message)}
-    finally{setFt(false);setTimeout(function(){setFm('')},5000)}
+    var u=yt.trim();if(!u){sFm('Enter a YouTube URL first');return}
+    sFt(true);try{
+      var r=await fetchYT(u,function(m){sFm(m)});
+      if(r.error){sFm(r.error);setTimeout(function(){sFm('')},3000);return}
+      if(!nm&&r.name)sNm(r.name);
+      if(r.thumbnail)sImgs(function(prev){if(prev.indexOf(r.thumbnail)===-1)return prev.concat([r.thumbnail]);return prev});
+      if(ing.length===0&&r.ingredients&&r.ingredients.length>0)sIng(r.ingredients);
+      if(!ins&&r.instructions&&r.instructions.length>0)sIns(r.instructions.join('\n'));
+      if(!cal&&r.calories)sCal(''+r.calories);if(!pro&&r.protein)sPro(''+r.protein);
+      if(!crb&&r.carbs)sCrb(''+r.carbs);if(!fat&&r.fat)sFat(''+r.fat);
+      if(r.servings)sSv(r.servings);
+      sFm(r.mode==='ai'?'Recipe extracted with AI!':'Got title & thumbnail.');
+    }catch(e){sFm('Failed: '+e.message)}finally{sFt(false);setTimeout(function(){sFm('')},5000)}
   }
   async function save(){
-    if(!nm.trim()){alert('Recipe name is required');return}
+    if(!nm.trim()){alert('Name required');return}
     var steps=ins.trim()?ins.trim().split('\n').filter(function(s){return s.trim()}):[];
-    var r={id:isE?p.recipe.id:uid(),name:nm.trim(),genreId:gi||null,images:imgs,youtubeUrl:yt.trim()||null,websiteUrl:wu.trim()||null,instructions:steps,calories:cal?parseFloat(cal):null,protein:pro?parseFloat(pro):null,carbs:crb?parseFloat(crb):null,fat:fat?parseFloat(fat):null,ingredients:ing.filter(function(x){return x.name.trim()}),createdAt:isE?p.recipe.createdAt:Date.now(),updatedAt:Date.now()};
+    var r={id:isE?p.recipe.id:uid(),name:nm.trim(),genreId:gi||null,images:imgs,youtubeUrl:yt.trim()||null,websiteUrl:wu.trim()||null,instructions:steps,calories:cal?parseFloat(cal):null,protein:pro?parseFloat(pro):null,carbs:crb?parseFloat(crb):null,fat:fat?parseFloat(fat):null,servings:sv||1,ingredients:ing.filter(function(x){return x.name.trim()}),coverIndex:isE?(p.recipe.coverIndex||0):0,hidden:isE?(p.recipe.hidden||false):false,createdAt:isE?p.recipe.createdAt:Date.now(),updatedAt:Date.now()};
     await D.saveRecipe(r);p.onBack();
   }
   var si=Object.assign({},inp,{padding:'10px 8px',fontSize:14});
   return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},h('div',{style:topBar},h('button',{onClick:p.onBack},h(Ic,{name:'back',size:24})),h('div',{style:{fontSize:20,fontFamily:'var(--serif)',flex:1}},isE?'Edit Recipe':'New Recipe'),h('button',{onClick:save,style:{color:'var(--pri)',fontWeight:700,fontSize:16}},isE?'Save':'Create')),h('div',{style:Object.assign({},scr,{paddingBottom:'calc(var(--sb) + 40px)'})},h('div',{style:{padding:'0 20px 40px'}},
-    // Photos
-    h('div',{style:lbl},'PHOTOS'),h('div',{style:{display:'flex',gap:10,overflowX:'auto',paddingBottom:4,marginBottom:20}},imgs.map(function(im,i){return h('div',{key:i,style:{position:'relative',width:90,height:90,borderRadius:12,overflow:'hidden',flexShrink:0}},h('img',{src:im,style:{width:'100%',height:'100%',objectFit:'cover'}}),h('button',{onClick:function(){setImgs(imgs.filter(function(_,x){return x!==i}))},style:{position:'absolute',top:4,right:4,width:22,height:22,borderRadius:11,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'close',size:12,color:'#fff'})))}),h('button',{onClick:function(){fRef.current.click()},style:{width:90,height:90,borderRadius:12,border:'1px dashed var(--brd)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,flexShrink:0,color:'var(--text2)'}},h(Ic,{name:'image',size:24,color:'var(--text2)'}),h('span',{style:{fontSize:11}},'Add'))),h('input',{ref:fRef,type:'file',accept:'image/*',multiple:true,onChange:pickImg,style:{display:'none'}}),
-    // Name
-    h('div',{style:lbl},'RECIPE NAME *'),h('input',{value:nm,onChange:function(e){setNm(e.target.value)},placeholder:'e.g. Spaghetti Carbonara',style:Object.assign({},inp,{marginBottom:20})}),
-    // Genre
-    h('div',{style:lbl},'GENRE'),h('select',{value:gi,onChange:function(e){setGi(e.target.value)},style:Object.assign({},inp,{marginBottom:20})},h('option',{value:''},'No genre'),D.genres.map(function(g){return h('option',{key:g.id,value:g.id},(g.emoji||'\uD83C\uDF7D\uFE0F')+' '+g.name)})),
-    // YouTube
-    h('div',{style:lbl},'YOUTUBE URL'),h('div',{style:{display:'flex',gap:8,marginBottom:4}},h('input',{value:yt,onChange:function(e){setYt(e.target.value)},placeholder:'Video or Shorts URL',style:Object.assign({},inp,{flex:1})}),h('button',{onClick:doFetch,disabled:fetching,style:{padding:'12px 14px',borderRadius:12,background:'var(--pri)',color:'#fff',fontWeight:600,opacity:fetching?0.6:1,display:'flex',alignItems:'center',justifyContent:'center',minWidth:48}},fetching?h('div',{className:'sp'}):h(Ic,{name:'sparkle',size:20,color:'#fff'}))),h('div',{style:{fontSize:12,marginBottom:20,minHeight:18,color:fmsg.includes('success')?'var(--grn)':fmsg.includes('Failed')||fmsg.includes('Invalid')?'#e53935':'var(--text2)'}},fmsg||'Tap \u2728 to fetch title & thumbnail. With API key: full AI extraction.'),
-    // Website
-    h('div',{style:lbl},'WEBSITE URL'),h('input',{value:wu,onChange:function(e){setWu(e.target.value)},placeholder:'https://example.com/recipe',style:Object.assign({},inp,{marginBottom:20})}),
-    // Nutrition
-    h('div',{style:lbl},'NUTRITION (PER SERVING)'),h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:20}},h('input',{value:cal,onChange:function(e){setCal(e.target.value)},placeholder:'Calories',type:'number',style:inp}),h('input',{value:pro,onChange:function(e){setPro(e.target.value)},placeholder:'Protein (g)',type:'number',style:inp}),h('input',{value:crb,onChange:function(e){setCrb(e.target.value)},placeholder:'Carbs (g)',type:'number',style:inp}),h('input',{value:fat,onChange:function(e){setFat(e.target.value)},placeholder:'Fat (g)',type:'number',style:inp})),
-    // Ingredients
+    h('div',{style:lbl},'PHOTOS'),h('div',{style:{display:'flex',gap:10,overflowX:'auto',paddingBottom:4,marginBottom:20}},imgs.map(function(im,i){return h('div',{key:i,style:{position:'relative',width:90,height:90,borderRadius:12,overflow:'hidden',flexShrink:0}},h('img',{src:im,style:{width:'100%',height:'100%',objectFit:'cover'}}),h('button',{onClick:function(){sImgs(imgs.filter(function(_,x){return x!==i}))},style:{position:'absolute',top:4,right:4,width:22,height:22,borderRadius:11,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'close',size:12,color:'#fff'})))}),h('button',{onClick:function(){fRef.current.click()},style:{width:90,height:90,borderRadius:12,border:'1px dashed var(--brd)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,flexShrink:0,color:'var(--text2)'}},h(Ic,{name:'image',size:24,color:'var(--text2)'}),h('span',{style:{fontSize:11}},'Add'))),h('input',{ref:fRef,type:'file',accept:'image/*',multiple:true,onChange:pickImg,style:{display:'none'}}),
+    h('div',{style:lbl},'RECIPE NAME *'),h('input',{value:nm,onChange:function(e){sNm(e.target.value)},placeholder:'e.g. Spaghetti Carbonara',style:Object.assign({},inp,{marginBottom:20})}),
+    h('div',{style:lbl},'GENRE'),h('select',{value:gi,onChange:function(e){sGi(e.target.value)},style:Object.assign({},inp,{marginBottom:20})},h('option',{value:''},'No genre'),D.genres.map(function(g){return h('option',{key:g.id,value:g.id},(g.emoji||'\uD83C\uDF7D\uFE0F')+' '+g.name)})),
+    h('div',{style:lbl},'YOUTUBE URL'),h('div',{style:{display:'flex',gap:8,marginBottom:4}},h('input',{value:yt,onChange:function(e){sYt(e.target.value)},placeholder:'Video or Shorts URL',style:Object.assign({},inp,{flex:1})}),h('button',{onClick:doFetch,disabled:fetching,style:{padding:'12px 14px',borderRadius:12,background:'var(--pri)',color:'#fff',fontWeight:600,opacity:fetching?0.6:1,display:'flex',alignItems:'center',justifyContent:'center',minWidth:48}},fetching?h('div',{className:'sp'}):h(Ic,{name:'sparkle',size:20,color:'#fff'}))),h('div',{style:{fontSize:12,marginBottom:20,minHeight:18,color:fmsg.includes('AI')||fmsg.includes('thumbnail')?'var(--grn)':fmsg.includes('Fail')||fmsg.includes('Invalid')?'#e53935':'var(--text2)'}},fmsg||'Tap \u2728 to fetch. API key enables full AI extraction.'),
+    h('div',{style:lbl},'WEBSITE URL'),h('input',{value:wu,onChange:function(e){sWu(e.target.value)},placeholder:'https://...',style:Object.assign({},inp,{marginBottom:20})}),
+    h('div',{style:lbl},'SERVINGS'),h('input',{value:sv,onChange:function(e){sSv(parseInt(e.target.value)||1)},type:'number',min:1,style:Object.assign({},inp,{width:80,marginBottom:20})}),
+    h('div',{style:lbl},'NUTRITION (PER SERVING)'),h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:20}},h('input',{value:cal,onChange:function(e){sCal(e.target.value)},placeholder:'Calories',type:'number',style:inp}),h('input',{value:pro,onChange:function(e){sPro(e.target.value)},placeholder:'Protein (g)',type:'number',style:inp}),h('input',{value:crb,onChange:function(e){sCrb(e.target.value)},placeholder:'Carbs (g)',type:'number',style:inp}),h('input',{value:fat,onChange:function(e){sFat(e.target.value)},placeholder:'Fat (g)',type:'number',style:inp})),
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},h('div',{style:Object.assign({},lbl,{marginBottom:0})},'INGREDIENTS'),h('button',{onClick:addI,style:{color:'var(--pri)',fontSize:14,fontWeight:600,display:'flex',alignItems:'center',gap:4}},h(Ic,{name:'plus',size:16,color:'var(--pri)'}),' Add')),
-    ing.length===0?h('div',{style:{padding:16,background:'var(--bg)',borderRadius:12,color:'var(--text2)',fontSize:14,marginBottom:20}},'No ingredients added yet'):h('div',{style:{marginBottom:20}},ing.map(function(x,i){return h('div',{key:i,style:{display:'flex',gap:6,marginBottom:8,alignItems:'center'}},h('input',{value:x.amount,onChange:function(e){updI(i,'amount',e.target.value)},placeholder:'Amt',style:Object.assign({},si,{width:55})}),h('input',{value:x.unit,onChange:function(e){updI(i,'unit',e.target.value)},placeholder:'Unit',style:Object.assign({},si,{width:55})}),h('input',{value:x.name,onChange:function(e){updI(i,'name',e.target.value)},placeholder:'Ingredient',style:Object.assign({},si,{flex:1})}),h('button',{onClick:function(){remI(i)},style:{color:'#e53935',flexShrink:0,padding:4}},h(Ic,{name:'close',size:16,color:'#e53935'})))})),
-    // Instructions
-    h('div',{style:lbl},'INSTRUCTIONS (one step per line)'),h('textarea',{value:ins,onChange:function(e){setIns(e.target.value)},placeholder:'Preheat oven to 180\u00B0C\nMix dry ingredients...',rows:6,style:Object.assign({},inp,{resize:'vertical',lineHeight:1.6})})
+    ing.length===0?h('div',{style:{padding:16,background:'var(--bg)',borderRadius:12,color:'var(--text2)',fontSize:14,marginBottom:20}},'No ingredients'):h('div',{style:{marginBottom:20}},ing.map(function(x,i){return h('div',{key:i,style:{display:'flex',gap:6,marginBottom:8,alignItems:'center'}},h('input',{value:x.amount,onChange:function(e){updI(i,'amount',e.target.value)},placeholder:'Amt',style:Object.assign({},si,{width:55})}),h('input',{value:x.unit,onChange:function(e){updI(i,'unit',e.target.value)},placeholder:'Unit',style:Object.assign({},si,{width:55})}),h('input',{value:x.name,onChange:function(e){updI(i,'name',e.target.value)},placeholder:'Ingredient',style:Object.assign({},si,{flex:1})}),h('button',{onClick:function(){remI(i)},style:{color:'#e53935',flexShrink:0,padding:4}},h(Ic,{name:'close',size:16,color:'#e53935'})))})),
+    h('div',{style:lbl},'INSTRUCTIONS (one per line)'),h('textarea',{value:ins,onChange:function(e){sIns(e.target.value)},placeholder:'Step 1...\nStep 2...',rows:6,style:Object.assign({},inp,{resize:'vertical',lineHeight:1.6})})
   )))}
 
-/* ========== SETTINGS ========== */
+/* ===== SETTINGS ===== */
 function SSet(p){
-  var D=useData();var iRef=ur(null);
-  var _ak=us(''),ak=_ak[0],setAk=_ak[1];
-  var _akLoaded=us(false),akLoaded=_akLoaded[0],setAkLoaded=_akLoaded[1];
-  var _akMsg=us(''),akMsg=_akMsg[0],setAkMsg=_akMsg[1];
-  var _showKey=us(false),showKey=_showKey[0],setShowKey=_showKey[1];
-  // Load API key on mount
-  ue(function(){getApiKey().then(function(k){setAk(k||'');setAkLoaded(true)})},[]);
-  async function saveKey(){await setApiKey(ak.trim()||null);setAkMsg(ak.trim()?'API key saved!':'API key removed.');setTimeout(function(){setAkMsg('')},3000)}
-  async function doImport(e){var f=e.target.files[0];if(!f)return;try{await D.importAll(f);alert('Import successful!')}catch(e){alert('Import failed: '+e.message)}e.target.value=''}
-  return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},
-    h('div',{style:topBar},h('button',{onClick:p.onBack},h(Ic,{name:'back',size:24})),h('div',{style:{fontSize:20,fontFamily:'var(--serif)',flex:1}},'Settings')),
-    h('div',{style:scr},h('div',{style:{padding:'0 20px'}},
-      // API Key section
-      h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16,marginBottom:12}},
-        h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:4}},'AI RECIPE EXTRACTION'),
-        h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Add your Anthropic API key to enable AI-powered recipe extraction from YouTube videos. Without it, only the video title and thumbnail are fetched.'),
-        h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Get a key at ',h('a',{href:'https://console.anthropic.com/settings/keys',target:'_blank',rel:'noopener',style:{color:'var(--pri)',fontWeight:600}},'console.anthropic.com')),
-        akLoaded?h('div',null,
-          h('div',{style:{position:'relative',marginBottom:8}},
-            h('input',{value:ak,onChange:function(e){setAk(e.target.value)},type:showKey?'text':'password',placeholder:'sk-ant-...',style:Object.assign({},inp,{paddingRight:44})}),
-            h('button',{onClick:function(){setShowKey(!showKey)},style:{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',color:'var(--text2)',fontSize:12}},showKey?'Hide':'Show')
-          ),
-          h('button',{onClick:saveKey,style:{padding:'10px 20px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:14,fontWeight:600,width:'100%'}},ak.trim()?'Save Key':'Remove Key'),
-          akMsg?h('div',{style:{fontSize:13,color:'var(--grn)',marginTop:8,textAlign:'center'}},akMsg):null,
-          ak.trim()?h('div',{style:{fontSize:12,color:'var(--grn)',marginTop:8,display:'flex',alignItems:'center',gap:6}},'\u2705 AI extraction enabled'):h('div',{style:{fontSize:12,color:'var(--text2)',marginTop:8}},'\u274C Basic mode (title + thumbnail only)')
-        ):h('div',{style:{textAlign:'center',padding:10}},h('div',{className:'sp spd'}))
-      ),
-      // Data section
-      h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16}},
-        h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:8}},'DATA'),
-        h('div',{style:{fontSize:15,color:'var(--text2)',marginBottom:16}},D.recipes.length+' recipes \u00B7 '+D.genres.length+' genres'),
-        h('button',{onClick:D.exportAll,style:{padding:'12px 24px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:10}},h(Ic,{name:'download',size:18,color:'#fff'}),' Export (JSON)'),
-        h('button',{onClick:function(){iRef.current.click()},style:{padding:'12px 24px',borderRadius:12,background:'transparent',color:'var(--pri)',fontSize:15,fontWeight:600,border:'2px solid var(--pri)',width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8}},h(Ic,{name:'upload',size:18,color:'var(--pri)'}),' Import'),
-        h('input',{ref:iRef,type:'file',accept:'.json',onChange:doImport,style:{display:'none'}})
-      ),
-      h('div',{style:{padding:20,color:'var(--text2)',fontSize:13,textAlign:'center',lineHeight:1.5}},'All data stored locally on this device. Your API key never leaves your phone.')
-    ))
+  var D=useData();var iRef=ur(null);var _ak=us(''),ak=_ak[0],sAk=_ak[1];var _akL=us(false),akL=_akL[0],sAkL=_akL[1];var _akM=us(''),akM=_akM[0],sAkM=_akM[1];var _skv=us(false),skv=_skv[0],sSkv=_skv[1];
+  ue(function(){getApiKey().then(function(k){sAk(k||'');sAkL(true)})},[]);
+  async function saveKey(){await setApiKey(ak.trim()||null);sAkM(ak.trim()?'Saved!':'Removed.');setTimeout(function(){sAkM('')},3000)}
+  async function doImp(e){var f=e.target.files[0];if(!f)return;try{await D.importAll(f);alert('Imported!')}catch(e){alert('Failed: '+e.message)}e.target.value=''}
+  return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},h('div',{style:topBar},h('button',{onClick:p.onBack},h(Ic,{name:'back',size:24})),h('div',{style:{fontSize:20,fontFamily:'var(--serif)',flex:1}},'Settings')),h('div',{style:scr},h('div',{style:{padding:'0 20px'}},
+    h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16,marginBottom:12}},h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:4}},'AI FEATURES'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'API key enables: YouTube recipe extraction, meal photo scanning.'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Get key: ',h('a',{href:'https://console.anthropic.com/settings/keys',target:'_blank',style:{color:'var(--pri)',fontWeight:600}},'console.anthropic.com')),
+      akL?h('div',null,h('div',{style:{position:'relative',marginBottom:8}},h('input',{value:ak,onChange:function(e){sAk(e.target.value)},type:skv?'text':'password',placeholder:'sk-ant-...',style:Object.assign({},inp,{paddingRight:44})}),h('button',{onClick:function(){sSkv(!skv)},style:{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',color:'var(--text2)',fontSize:12}},skv?'Hide':'Show')),h('button',{onClick:saveKey,style:{padding:'10px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:14,fontWeight:600,width:'100%'}},ak.trim()?'Save Key':'Remove Key'),akM?h('div',{style:{fontSize:13,color:'var(--grn)',marginTop:8,textAlign:'center'}},akM):null,h('div',{style:{fontSize:12,color:ak.trim()?'var(--grn)':'var(--text2)',marginTop:8}},ak.trim()?'\u2705 AI enabled':'\u274C Basic mode')):h('div',{className:'sp spd'})
+    ),
+    h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16}},h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:8}},'DATA'),h('div',{style:{fontSize:15,color:'var(--text2)',marginBottom:16}},D.recipes.length+' recipes \xB7 '+D.genres.length+' genres'),h('button',{onClick:D.exportAll,style:{padding:'12px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,width:'100%',marginBottom:10}},'Export (JSON)'),h('button',{onClick:function(){iRef.current.click()},style:{padding:'12px',borderRadius:12,background:'transparent',color:'var(--pri)',fontSize:15,fontWeight:600,border:'2px solid var(--pri)',width:'100%'}},'Import'),h('input',{ref:iRef,type:'file',accept:'.json',onChange:doImp,style:{display:'none'}})),
+    h('div',{style:{padding:20,color:'var(--text2)',fontSize:13,textAlign:'center',lineHeight:1.5}},'Data stored locally. API key never leaves your device.')
+  )))}
+
+/* ===== FAB MENU (Add recipe or Scan meal) ===== */
+function FabMenu(p){
+  var _sh=us(false),sh=_sh[0],sSh=_sh[1];
+  var _scanSh=us(false),scanSh=_scanSh[0],sScanSh=_scanSh[1];
+  var _scanImg=us(null),scanImg=_scanImg[0],sScanImg=_scanImg[1];
+  var _scanComment=us(''),scanC=_scanComment[0],sScanC=_scanComment[1];
+  var _scanResult=us(null),scanRes=_scanResult[0],sScanRes=_scanResult[1];
+  var _scanning=us(false),scanning=_scanning[0],sScanning=_scanning[1];
+  var _showC=us(false),showC=_showC[0],sShowC=_showC[1];
+  var fRef=ur(null);
+  async function pickAndScan(e){var f=e.target.files[0];if(f){var d=await f2d(f);sScanImg(d);sScanRes(null)}e.target.value=''}
+  async function doScan(){if(!scanImg)return;sScanning(true);var r=await scanMeal(scanImg,scanC.trim()||null);if(r.error)alert(r.error);else sScanRes(r);sScanning(false)}
+  return h(F,null,
+    h('button',{onClick:function(){sSh(true)},style:fabS},h(Ic,{name:'plus',size:26,color:'#fff'})),
+    h(Sheet,{open:sh,onClose:function(){sSh(false)}},
+      h('div',{style:{fontSize:20,fontWeight:700,marginBottom:16}},'Add New'),
+      h('button',{onClick:function(){sSh(false);p.onAddRecipe()},style:{display:'flex',alignItems:'center',gap:14,padding:'16px 0',width:'100%',fontSize:16,borderBottom:'1px solid var(--brd)'}},h('div',{style:{width:44,height:44,borderRadius:12,background:'var(--obg)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'edit',size:22,color:'var(--org)'})),h('div',null,h('div',{style:{fontWeight:600}},'Add Recipe'),h('div',{style:{fontSize:13,color:'var(--text2)'}},'Create manually or from YouTube'))),
+      h('button',{onClick:function(){sSh(false);sScanSh(true);sScanImg(null);sScanRes(null);sScanC('')},style:{display:'flex',alignItems:'center',gap:14,padding:'16px 0',width:'100%',fontSize:16}},h('div',{style:{width:44,height:44,borderRadius:12,background:'var(--gbg)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'scan',size:22,color:'var(--grn)'})),h('div',null,h('div',{style:{fontWeight:600}},'Scan a Meal'),h('div',{style:{fontSize:13,color:'var(--text2)'}},'Estimate calories from photo')))
+    ),
+    // Scan sheet
+    h(Sheet,{open:scanSh,onClose:function(){sScanSh(false)}},
+      h('div',{style:{fontSize:20,fontWeight:700,marginBottom:20}},'Scan Meal'),
+      scanImg?h('div',{style:{position:'relative',marginBottom:12}},h('img',{src:scanImg,style:{width:'100%',height:200,objectFit:'cover',borderRadius:12}}),h('button',{onClick:function(){sScanImg(null);sScanRes(null)},style:{position:'absolute',top:8,right:8,width:28,height:28,borderRadius:14,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'close',size:14,color:'#fff'}))):
+      h('button',{onClick:function(){fRef.current.click()},style:{width:'100%',padding:30,borderRadius:12,border:'1px dashed var(--brd)',display:'flex',flexDirection:'column',alignItems:'center',gap:8,color:'var(--text2)',marginBottom:12}},h(Ic,{name:'camera',size:32,color:'var(--text2)'}),'Upload meal photo'),
+      h('input',{ref:fRef,type:'file',accept:'image/*',onChange:pickAndScan,style:{display:'none'}}),
+      h('button',{onClick:function(){sShowC(!showC)},style:{display:'flex',alignItems:'center',gap:6,color:'var(--text2)',fontSize:14,marginBottom:showC?8:12}},h(Ic,{name:'chevDown',size:16,color:'var(--text2)',style:{transform:showC?'rotate(180deg)':'none',transition:'transform .2s'}}),' Add sizing/detail info'),
+      showC?h('textarea',{value:scanC,onChange:function(e){sScanC(e.target.value)},placeholder:'e.g. Large portion, extra cheese...',rows:2,style:Object.assign({},inp,{resize:'vertical',lineHeight:1.5,marginBottom:12})}):null,
+      scanImg?h('button',{onClick:doScan,disabled:scanning,style:{width:'100%',padding:'14px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,marginBottom:12,opacity:scanning?0.6:1}},scanning?h('div',{className:'sp'}):'Analyze with AI'):null,
+      scanRes?h('div',{style:{background:'var(--card)',border:'1px solid var(--brd)',borderRadius:14,padding:16}},h('div',{style:{fontSize:16,fontWeight:700,marginBottom:8}},scanRes.description||'Meal Analysis'),h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},h('div',{style:{padding:10,background:'var(--obg)',borderRadius:10,textAlign:'center'}},h('div',{style:{fontSize:20,fontWeight:800,color:'var(--org)'}},scanRes.calories),h('div',{style:{fontSize:11,color:'var(--org)'}},'calories')),h('div',{style:{padding:10,background:'var(--gbg)',borderRadius:10,textAlign:'center'}},h('div',{style:{fontSize:20,fontWeight:800,color:'var(--grn)'}},scanRes.protein,'g'),h('div',{style:{fontSize:11,color:'var(--grn)'}},'protein')),h('div',{style:{padding:10,background:'#E3F2FD',borderRadius:10,textAlign:'center'}},h('div',{style:{fontSize:20,fontWeight:800,color:'var(--blu)'}},scanRes.carbs,'g'),h('div',{style:{fontSize:11,color:'var(--blu)'}},'carbs')),h('div',{style:{padding:10,background:'#FFF9C4',borderRadius:10,textAlign:'center'}},h('div',{style:{fontSize:20,fontWeight:800,color:'var(--yel)'}},scanRes.fat,'g'),h('div',{style:{fontSize:11,color:'var(--yel)'}},'fat'))),h('div',{style:{fontSize:12,color:'var(--text2)',marginTop:8,textAlign:'center'}},'Confidence: ',scanRes.confidence||'medium')):null
+    )
   );
 }
 
-/* ========== APP ========== */
+/* ===== APP ===== */
 function App(){
-  var _sc=us({name:'genres'}),sc=_sc[0],setSc=_sc[1];var _tab=us(0),tab=_tab[0],setTab=_tab[1];
-  function nav(n,p){setSc(Object.assign({name:n},p||{}))}
+  var _sc=us({name:'genres'}),sc=_sc[0],sSc=_sc[1];var _tab=us(0),tab=_tab[0],sTab=_tab[1];
+  function nav(n,p){sSc(Object.assign({name:n},p||{}))}
   if(sc.name==='settings')return h(SSet,{onBack:function(){nav(tab===0?'genres':'all')}});
   if(sc.name==='gr')return h(SGR,{genre:sc.genre,onBack:function(){nav('genres')},onOpenRecipe:function(r){nav('det',{recipe:r})},onCreateRecipe:function(gid){nav('form',{preG:gid})}});
   if(sc.name==='det')return h(SDet,{recipe:sc.recipe,onBack:function(){nav(tab===0?'genres':'all')},onEdit:function(r){nav('form',{recipe:r})}});
   if(sc.name==='form')return h(SForm,{recipe:sc.recipe,preG:sc.preG,onBack:function(){nav(tab===0?'genres':'all')}});
-  var tabStyle=function(active){return{flex:1,display:'flex',flexDirection:'column',alignItems:'center',padding:'10px 0 6px',color:active?'var(--pri)':'var(--text2)',fontSize:11,fontWeight:active?700:500,gap:3}};
-  return h('div',{style:{height:'100%',position:'relative'}},h('div',{style:{height:'100%',display:tab===0?'block':'none'}},h(SGenres,{onOpenGenre:function(g){nav('gr',{genre:g})},onCreateRecipe:function(){nav('form')}})),h('div',{style:{height:'100%',display:tab===1?'block':'none'}},h(SAll,{onOpenRecipe:function(r){nav('det',{recipe:r})},onCreateRecipe:function(){nav('form')}})),h('div',{style:{position:'fixed',bottom:0,left:0,right:0,display:'flex',background:'var(--card)',borderTop:'1px solid var(--brd)',paddingBottom:'var(--sb)',zIndex:30}},h('button',{style:tabStyle(tab===0),onClick:function(){setTab(0);nav('genres')}},h(Ic,{name:'folder',size:22}),'Genres'),h('button',{style:tabStyle(tab===1),onClick:function(){setTab(1);nav('all')}},h(Ic,{name:'grid',size:22}),'All Recipes'),h('button',{style:tabStyle(false),onClick:function(){nav('settings')}},h(Ic,{name:'settings',size:22}),'Settings')))}
+  var ts=function(a){return{flex:1,display:'flex',flexDirection:'column',alignItems:'center',padding:'10px 0 6px',color:a?'var(--pri)':'var(--text2)',fontSize:11,fontWeight:a?700:500,gap:3}};
+  return h('div',{style:{height:'100%',position:'relative'}},
+    h('div',{style:{height:'100%',display:tab===0?'block':'none'}},h(SGenres,{onOpenGenre:function(g){nav('gr',{genre:g})},onAdd:function(){nav('form')}})),
+    h('div',{style:{height:'100%',display:tab===1?'block':'none'}},h(SAll,{onOpenRecipe:function(r){nav('det',{recipe:r})},onAdd:function(){nav('form')}})),
+    h(FabMenu,{onAddRecipe:function(){nav('form')}}),
+    h('div',{style:{position:'fixed',bottom:0,left:0,right:0,display:'flex',background:'var(--card)',borderTop:'1px solid var(--brd)',paddingBottom:'var(--sb)',zIndex:30}},
+      h('button',{style:ts(tab===0),onClick:function(){sTab(0);nav('genres')}},h(Ic,{name:'folder',size:22}),'Genres'),
+      h('button',{style:ts(tab===1),onClick:function(){sTab(1);nav('all')}},h(Ic,{name:'grid',size:22}),'All Recipes'),
+      h('button',{style:ts(false),onClick:function(){nav('settings')}},h(Ic,{name:'settings',size:22}),'Settings')
+    )
+  );
+}
 
-/* ========== MOUNT ========== */
 ReactDOM.createRoot(document.getElementById('root')).render(h(DataProvider,null,h(App)));
 if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(function(){});
 </script>
