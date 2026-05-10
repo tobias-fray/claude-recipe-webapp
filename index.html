@@ -52,7 +52,7 @@ function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 function parseAmt(s){if(!s)return null;s=s.trim();var fracs={'\u00BD':0.5,'\u00BC':0.25,'\u00BE':0.75,'\u2153':0.333,'\u2154':0.667};if(fracs[s])return fracs[s];var n=parseFloat(s);return isNaN(n)?null:n}
 function fmtAmt(n){if(n==null)return'';if(n===Math.floor(n))return''+n;return n%1>0.01?n.toFixed(1).replace(/\.0$/,''):''+Math.round(n)}
-var APP_VERSION='0.907';
+var APP_VERSION='0.908';
 // CORS proxy with fallback
 async function corsGet(targetUrl){
   // Try allorigins first (supports HTML, wraps in JSON)
@@ -286,52 +286,17 @@ async function fetchYT(url,cb){
   if(!title)try{var r2=await fetch('https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v='+vid+'&format=json');if(r2.ok){var d2=await r2.json();title=d2.title}}catch(e){}
   var apiKey=await getApiKey();
   if(!apiKey){if(cb)cb('Got title & thumbnail');return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'}}
-  // Step 1: Fetch YouTube page HTML to find caption tracks and description
-  if(cb)cb('Fetching video data...');
-  var transcript=null;var description=null;
+  if(cb)cb('Fetching transcript...');
+  var transcript=null;
+  try{var tr=await corsGet('https://www.youtube.com/watch?v='+vid);if(tr.ok){var html=await tr.text();var capMatch=html.match(/"captionTracks"\s*:\s*(\[.*?\])/);if(capMatch){var tracks=JSON.parse(capMatch[1]);if(tracks&&tracks.length>0){var track=tracks.find(function(t){return t.kind!=='asr'&&/^en/.test(t.languageCode)})||tracks.find(function(t){return/^en/.test(t.languageCode)})||tracks.find(function(t){return t.kind!=='asr'})||tracks[0];if(track&&track.baseUrl){if(cb)cb('Reading captions...');var capUrl=track.baseUrl;if(capUrl.indexOf('fmt=')===-1)capUrl+='&fmt=json3';var capResp=await corsGet(capUrl);if(capResp.ok){var capData=await capResp.json();if(capData.events)transcript=capData.events.filter(function(e){return e.segs}).map(function(e){return e.segs.map(function(s){return s.utf8||''}).join('')}).join(' ').replace(/\s+/g,' ').trim().substring(0,4000)}}}}}}catch(e){console.log('transcript err',e)}
+  if(cb)cb('AI extracting recipe...');
+  var ctx='Title: "'+(title||'Unknown')+'"\n'+(transcript?'Transcript:\n'+transcript+'\n':'No transcript available. Provide the standard recipe for this dish.\n');
   try{
-    var pageResp=await corsGet('https://www.youtube.com/watch?v='+vid);
-    if(pageResp.ok){
-      var html=await pageResp.text();
-      // Extract description from page
-      var descMatch=html.match(/"shortDescription"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-      if(descMatch){try{description=JSON.parse('"'+descMatch[1]+'"')}catch(e){description=descMatch[1].replace(/\\n/g,'\n').replace(/\\"/g,'"')}}
-      // Extract caption track URL
-      var capMatch=html.match(/"captionTracks"\s*:\s*(\[.*?\])/);
-      if(capMatch){
-        try{
-          var tracks=JSON.parse(capMatch[1]);
-          if(tracks&&tracks.length>0){
-            // Prefer non-auto tracks, then English, then first available
-            var track=tracks.find(function(t){return t.kind!=='asr'&&(t.languageCode==='en'||t.languageCode==='en-US')})||tracks.find(function(t){return t.languageCode==='en'||t.languageCode==='en-US'})||tracks.find(function(t){return t.kind!=='asr'})||tracks[0];
-            if(track&&track.baseUrl){
-              if(cb)cb('Fetching transcript...');
-              var capUrl=track.baseUrl;if(capUrl.indexOf('fmt=')===-1)capUrl+='&fmt=json3';
-              var capResp=await corsGet(capUrl);
-              if(capResp.ok){
-                var capData=await capResp.json();
-                if(capData.events){transcript=capData.events.filter(function(e){return e.segs}).map(function(e){return e.segs.map(function(s){return s.utf8||''}).join('')}).join(' ').replace(/\s+/g,' ').trim().substring(0,4000)}
-              }
-            }
-          }
-        }catch(e){console.log('caption parse err',e)}
-      }
-    }
-  }catch(e){console.log('page fetch err',e)}
-  // Step 2: Use transcript or description for AI extraction
-  var source=transcript||(description&&description.length>30?description.substring(0,4000):null);
-  if(source){
-    if(cb)cb('AI extracting recipe...');
-    var ctx='Title: "'+(title||'Unknown')+'"\n'+(transcript?'Video transcript:\n':'Video description:\n')+source+'\n\nExtract the recipe from the above content. Return ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null.';
-    try{
-      var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:2000,messages:[{role:'user',content:ctx}]})});
-      if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories,protein:p.protein,carbs:p.carbs,fat:p.fat,thumbnail:thumb,mode:'ai'}}
-      else{var et=await resp.text();console.log('API:',resp.status,et)}
-    }catch(e){console.log('AI fail',e)}
-  }
-  // Step 3: No usable content found
-  if(cb)cb('No content found');
-  return{name:title||'Recipe',servings:4,ingredients:[],instructions:['\u26A0\uFE0F No transcript or description found for this video. Add ingredients and instructions manually.'],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:2000,messages:[{role:'user',content:ctx+'\nReturn ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null.'}]})});
+    if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories,protein:p.protein,carbs:p.carbs,fat:p.fat,thumbnail:thumb,mode:'ai'}}
+    else{var et=await resp.text();console.log('API:',resp.status,et)}
+  }catch(e){console.log('AI fail',e)}
+  return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
 }
 /* ===== MEAL SCANNER ===== */
 async function scanMeal(imgData,comment){
