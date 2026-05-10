@@ -1,4 +1,4 @@
-const CACHE_NAME = 'recipe-app-v2';
+const CACHE_NAME = 'recipe-app-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -30,6 +30,7 @@ self.addEventListener('fetch', e => {
       url.includes('lemnoslife.com') ||
       url.includes('youtube.com/oembed') ||
       url.includes('img.youtube.com') ||
+      url.includes('supabase.co') ||
       e.request.method !== 'GET') {
     return;
   }

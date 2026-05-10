@@ -1,157 +1,106 @@
-# Recipe App — Web PWA Setup Guide
-## GitHub Pages → iPhone Home Screen
+# Recipe App — Supabase Cloud Sync Setup
 
----
+## 1. Create a Supabase Project
+1. Go to [supabase.com](https://supabase.com) and sign up (free)
+2. Click **New Project**, choose a name and password
+3. Wait for the project to spin up (~2 minutes)
 
-## What You're Building
+## 2. Create Database Tables
+Go to **SQL Editor** in the left sidebar, paste this entire block, and click **Run**:
 
-A Progressive Web App (PWA) hosted free on GitHub Pages. Once added to your
-iPhone's home screen it looks and behaves like a native app: full-screen, its own
-icon, offline-capable. All data is stored locally on your phone in the browser —
-no database, no server, no cost.
+```sql
+-- Genres table
+CREATE TABLE genres (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  emoji TEXT,
+  created_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000),
+  updated_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)
+);
 
----
+-- Recipes table
+CREATE TABLE recipes (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  genre_ids JSONB DEFAULT '[]',
+  images JSONB DEFAULT '[]',
+  youtube_url TEXT,
+  website_url TEXT,
+  instructions JSONB DEFAULT '[]',
+  calories NUMERIC,
+  protein NUMERIC,
+  carbs NUMERIC,
+  fat NUMERIC,
+  servings INTEGER DEFAULT 1,
+  ingredients JSONB DEFAULT '[]',
+  cover_index INTEGER DEFAULT 0,
+  hidden BOOLEAN DEFAULT FALSE,
+  rating INTEGER DEFAULT 0,
+  created_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000),
+  updated_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)
+);
 
-## Step 1: Create a GitHub Repository
+-- Diary table
+CREATE TABLE diary (
+  id TEXT PRIMARY KEY,
+  recipe_id TEXT,
+  date BIGINT,
+  comment TEXT,
+  image TEXT,
+  scan JSONB,
+  created_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)
+);
 
-1. Go to https://github.com and sign in (or create a free account).
-2. Click the green **"New"** button (top-left) to create a new repository.
-3. Fill in:
-   - **Repository name**: `recipe-app` (or anything you like)
-   - **Visibility**: Public (required for free GitHub Pages)
-   - **Do NOT** initialize with README, .gitignore, or license
-4. Click **"Create repository"**.
-5. Keep this page open — you'll need the URL in Step 3.
+-- Enable RLS
+ALTER TABLE genres ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recipes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE diary ENABLE ROW LEVEL SECURITY;
 
----
-
-## Step 2: Set Up the Project on Your PC
-
-### 2.1 Install Git (if you haven't)
-
-Download from https://git-scm.com/download/win and install with default settings.
-
-### 2.2 Create the project folder
-
-Open a terminal (Command Prompt, PowerShell, or VS Code terminal) and run:
-
-```bash
-mkdir recipe-app
-cd recipe-app
+-- Allow all operations with anon key (single-user app)
+CREATE POLICY "Allow all genres" ON genres FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all recipes" ON recipes FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all diary" ON diary FOR ALL USING (true) WITH CHECK (true);
 ```
 
-### 2.3 Copy the project files
+## 3. Create Storage Bucket for Images
+1. Go to **Storage** in the left sidebar
+2. Click **New Bucket**
+3. Name it exactly: `images`
+4. **Check "Public bucket"**
+5. Click **Create bucket**
+6. Then add a storage policy — paste in the SQL editor:
 
-Copy ALL the files I provided into this `recipe-app` folder.  
-Your folder should look like this:
-
-```
-recipe-app/
-├── index.html          ← The entire app (single file)
-├── manifest.json       ← PWA configuration
-├── sw.js               ← Service worker (offline support)
-├── icons/
-│   ├── icon-192.png    ← App icon (you create these)
-│   └── icon-512.png    ← App icon (you create these)
-└── README.md           ← This guide (optional)
+```sql
+CREATE POLICY "Allow public image access" ON storage.objects
+  FOR ALL USING (bucket_id = 'images') WITH CHECK (bucket_id = 'images');
 ```
 
-### 2.4 Create app icons
+## 4. Get Your Credentials
+1. Go to **Settings** → **API** in the left sidebar
+2. Copy **Project URL** (looks like `https://xxxxx.supabase.co`)
+3. Copy **anon / public** key (the long `eyJ...` string)
 
-You need two PNG icons for the home screen:
-- `icons/icon-192.png` → 192×192 pixels
-- `icons/icon-512.png` → 512×512 pixels
+## 5. Connect the App
+1. Open your Recipe App → **Settings** (bottom tab)
+2. Under **Cloud Sync**, paste your Project URL and Anon Key
+3. Click **Connect & Sync**
+4. Done! Recipes sync across all devices.
 
-**Quick way**: Go to https://favicon.io/emoji-favicons/ and search for a
-cooking emoji (🍳 or 🍽️). Download it and resize to 192px and 512px.
-Put them in the `icons/` folder.
+## How Sync Works
+- **On launch**: loads locally (instant), then syncs with cloud in background
+- **On every save/edit/delete/rate**: writes locally first, then pushes to cloud
+- **Multi-device**: open on any device, recipes from other devices appear within seconds
+- **Conflicts**: most recent edit wins (by timestamp)
+- **Images**: resized to 1600px before uploading (saves storage)
+- **Offline**: works fully offline, syncs when back online
 
----
+## What Syncs
+Everything: genres, recipes (all fields including rating, hidden, cover photo, ingredients, instructions, nutrition, links), diary entries (photos, scan results, comments), and images.
 
-## Step 3: Push to GitHub
+## Export/Import
+Still works independently of cloud sync. Exports include: genres, recipes, diary entries, and all settings (API key, Supabase config). After importing, data auto-syncs to cloud if connected.
 
-In the terminal, inside your `recipe-app` folder:
-
-```bash
-git init
-git add .
-git commit -m "Initial commit"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/recipe-app.git
-git push -u origin main
-```
-
-Replace `YOUR_USERNAME` with your actual GitHub username.
-
----
-
-## Step 4: Enable GitHub Pages
-
-1. Go to your repository on GitHub (https://github.com/YOUR_USERNAME/recipe-app).
-2. Click **Settings** (top menu bar, far right).
-3. In the left sidebar, click **Pages**.
-4. Under **"Source"**, select **"Deploy from a branch"**.
-5. Under **"Branch"**, select **main** and **/ (root)**, then click **Save**.
-6. Wait 1–2 minutes, then refresh the page.
-7. You'll see a green banner: **"Your site is live at
-   https://YOUR_USERNAME.github.io/recipe-app/"**
-
----
-
-## Step 5: Install on Your iPhone
-
-1. Open **Safari** on your iPhone (must be Safari — Chrome won't work for PWAs
-   on iOS).
-2. Go to: `https://YOUR_USERNAME.github.io/recipe-app/`
-3. Tap the **Share button** (square with arrow, bottom center).
-4. Scroll down and tap **"Add to Home Screen"**.
-5. Name it "Recipes" (or whatever you like) and tap **"Add"**.
-6. The app icon now appears on your home screen.
-7. Open it — it runs full-screen like a native app!
-
----
-
-## Step 6: Updating the App
-
-Whenever you make changes:
-
-```bash
-cd recipe-app
-git add .
-git commit -m "Updated the app"
-git push
-```
-
-GitHub Pages will redeploy automatically in 1–2 minutes. The service worker
-will detect the update and load the new version next time you open the app.
-
----
-
-## FAQ
-
-**Will I lose my recipes if I update the app?**  
-No. Recipes are stored in IndexedDB on your phone, completely separate from the
-app files. Updating the code does not touch your data.
-
-**What if I clear Safari data?**  
-That will delete your stored recipes. Avoid: Settings → Safari → Clear History
-and Website Data. If you want to be safe, the app has an export feature to save
-your recipes as a JSON file.
-
-**Can I share this with friends / family?**  
-Yes! Anyone can visit the same URL and add it to their home screen. Each person's
-recipes are private and stored only on their own device.
-
-**Does it work offline?**  
-Yes. After the first visit, the service worker caches the app. You can browse
-and create recipes without internet. Images from YouTube thumbnails will need
-internet though.
-
-**Can I use a custom domain instead of github.io?**  
-Yes. Buy a domain (e.g. from Namecheap, ~$10/year), then in your GitHub repo
-Settings → Pages → Custom domain, enter your domain and follow the DNS
-instructions.
-
-**How much storage do I have?**  
-Browsers typically allow 50–100+ MB of IndexedDB storage per site. That's enough
-for thousands of recipes with images.
+## Free Tier Limits
+- 500 MB database — thousands of recipes
+- 1 GB file storage — ~500+ recipe photos at 1600px
+- 5 GB bandwidth/month — plenty for personal multi-device use
