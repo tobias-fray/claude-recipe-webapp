@@ -97,17 +97,33 @@ async function sbDelete(table,id){
   if(!SB.ready)return;
   try{await fetch(sbUrl(table,'?id=eq.'+id),{method:'DELETE',headers:sbHeaders()})}catch(e){console.log('sbDel fail',table,e)}
 }
-// Upload image to Supabase Storage
+// Upload image to Supabase Storage — deterministic name, skip if already uploaded
 async function sbUploadImg(name,dataUrl){
-  if(!SB.ready||!dataUrl||!dataUrl.startsWith('data:'))return null;
-  try{
-    var resized=await resizeImg(dataUrl,1600);
-    var b64=resized.split(',')[1];var mt=resized.match(/data:(.*?);/)[1];
-    var bytes=Uint8Array.from(atob(b64),function(c){return c.charCodeAt(0)});
-    var r=await fetch(SB.cfg.url+'/storage/v1/object/images/'+name,{method:'POST',headers:{'apikey':SB.cfg.key,'Authorization':'Bearer '+SB.cfg.key,'Content-Type':mt,'x-upsert':'true'},body:bytes});
-    if(r.ok||r.status===200){return SB.cfg.url+'/storage/v1/object/public/images/'+name}
-    console.log('upload fail',r.status,await r.text());return null;
-  }catch(e){console.log('upload err',e);return null}
+  if(!SB.ready||!dataUrl)return null;
+  // If it's already a Supabase URL, skip
+  if(dataUrl.indexOf(SB.cfg.url)!==-1)return dataUrl;
+  // Handle base64 data URLs
+  if(dataUrl.startsWith('data:')){
+    try{
+      var resized=await resizeImg(dataUrl,1600);
+      var b64=resized.split(',')[1];var mt=resized.match(/data:(.*?);/)[1];
+      var bytes=Uint8Array.from(atob(b64),function(c){return c.charCodeAt(0)});
+      var r=await fetch(SB.cfg.url+'/storage/v1/object/images/'+name,{method:'POST',headers:{'apikey':SB.cfg.key,'Authorization':'Bearer '+SB.cfg.key,'Content-Type':mt,'x-upsert':'true'},body:bytes});
+      if(r.ok||r.status===200){return SB.cfg.url+'/storage/v1/object/public/images/'+name}
+      console.log('upload fail',r.status,await r.text());return null;
+    }catch(e){console.log('upload err',e);return null}
+  }
+  // Handle external URLs (e.g. YouTube thumbnails) — download and re-upload
+  if(dataUrl.startsWith('http')){
+    try{
+      var resp=await fetch(dataUrl);if(!resp.ok)return null;
+      var blob=await resp.blob();
+      var r=await fetch(SB.cfg.url+'/storage/v1/object/images/'+name,{method:'POST',headers:{'apikey':SB.cfg.key,'Authorization':'Bearer '+SB.cfg.key,'Content-Type':blob.type||'image/jpeg','x-upsert':'true'},body:blob});
+      if(r.ok||r.status===200){return SB.cfg.url+'/storage/v1/object/public/images/'+name}
+      console.log('upload ext fail',r.status,await r.text());return null;
+    }catch(e){console.log('upload ext err',e);return null}
+  }
+  return null;
 }
 // Full sync: push local changes, pull remote changes
 async function sbSync(localGenres,localRecipes){
@@ -164,21 +180,25 @@ async function sbSync(localGenres,localRecipes){
         var localImgs=rec.images||[];
         for(var j=0;j<localImgs.length;j++){
           var im=localImgs[j];
-          if(im&&im.startsWith('data:')){
-            var imgName=rec.id+'_'+j+'_'+Date.now()+'.jpg';
+          if(im&&im.indexOf(SB.cfg.url)!==-1){cloudImgs.push(im);continue}
+          if(im&&(im.startsWith('data:')||im.startsWith('http'))){
+            var imgName=rec.id+'_img'+j+'.jpg';
             var url=await sbUploadImg(imgName,im);
-            cloudImgs.push(url||im);
+            if(url){cloudImgs.push(url);localImgs[j]=url}
+            else cloudImgs.push(im);
           }else{cloudImgs.push(im)}
         }
+        // Update local with cloud URLs
+        if(localImgs!==rec.images||cloudImgs.some(function(u,i){return u!==rec.images[i]})){rec.images=localImgs;await dPut('recipes',rec)}
         // Upload diary images too
         var diaryForRec=pushD.filter(function(d){return d.recipeId===rec.id});
         for(var k=0;k<diaryForRec.length;k++){
           var de=diaryForRec[k];
           if(de.image&&de.image.startsWith('data:')){
-            var dn='diary_'+de.id+'_'+Date.now()+'.jpg';
+            var dn='diary_'+de.id+'.jpg';
             var du=await sbUploadImg(dn,de.image);
-            if(du)de.cloudImage=du;
-          }
+            if(du){de.cloudImage=du;de.image=du;await dPut('diary',de)}
+          }else if(de.image&&de.image.indexOf(SB.cfg.url)!==-1){de.cloudImage=de.image}
         }
         var row={id:rec.id,name:rec.name,genre_ids:rGids(rec),images:cloudImgs,youtube_url:rec.youtubeUrl||null,website_url:rec.websiteUrl||null,instructions:rec.instructions||[],calories:rec.calories,protein:rec.protein,carbs:rec.carbs,fat:rec.fat,servings:rec.servings||1,ingredients:rec.ingredients||[],cover_index:rec.coverIndex||0,hidden:rec.hidden||false,rating:rec.rating||0,created_at:rec.createdAt||Date.now(),updated_at:rec.updatedAt||Date.now()};
         await sbUpsert('recipes',[row]);
@@ -213,18 +233,31 @@ async function sbPushGenre(g){
 }
 async function sbPushRecipe(rec){
   if(!SB.ready)return;
-  var cloudImgs=[];var li=rec.images||[];
+  var cloudImgs=[];var li=rec.images||[];var localChanged=false;
   for(var j=0;j<li.length;j++){
     var im=li[j];
-    if(im&&im.startsWith('data:')){var n=rec.id+'_'+j+'_'+Date.now()+'.jpg';var u=await sbUploadImg(n,im);cloudImgs.push(u||im)}
-    else cloudImgs.push(im);
+    // Already a Supabase URL — keep as-is
+    if(im&&im.indexOf(SB.cfg.url)!==-1){cloudImgs.push(im);continue}
+    // Needs upload (base64 or external URL like YouTube thumb)
+    if(im&&(im.startsWith('data:')||im.startsWith('http'))){
+      var n=rec.id+'_img'+j+'.jpg';
+      var u=await sbUploadImg(n,im);
+      if(u){cloudImgs.push(u);li[j]=u;localChanged=true}
+      else cloudImgs.push(im);
+    }else{cloudImgs.push(im)}
   }
+  // Write cloud URLs back to local DB so we don't re-upload next time
+  if(localChanged){rec.images=li;await dPut('recipes',rec)}
   sbUpsert('recipes',[{id:rec.id,name:rec.name,genre_ids:rGids(rec),images:cloudImgs,youtube_url:rec.youtubeUrl||null,website_url:rec.websiteUrl||null,instructions:rec.instructions||[],calories:rec.calories,protein:rec.protein,carbs:rec.carbs,fat:rec.fat,servings:rec.servings||1,ingredients:rec.ingredients||[],cover_index:rec.coverIndex||0,hidden:rec.hidden||false,rating:rec.rating||0,created_at:rec.createdAt||Date.now(),updated_at:rec.updatedAt||Date.now()}]);
 }
 async function sbPushDiary(d){
   if(!SB.ready)return;
   var ci=null;
-  if(d.image&&d.image.startsWith('data:')){var n='diary_'+d.id+'_'+Date.now()+'.jpg';ci=await sbUploadImg(n,d.image)}
+  if(d.image&&d.image.indexOf(SB.cfg.url)!==-1){ci=d.image}
+  else if(d.image&&d.image.startsWith('data:')){
+    var n='diary_'+d.id+'.jpg';ci=await sbUploadImg(n,d.image);
+    if(ci){d.image=ci;await dPut('diary',d)}
+  }
   sbUpsert('diary',[{id:d.id,recipe_id:d.recipeId,date:d.date,comment:d.comment||null,image:ci||null,scan:d.scan||null,created_at:d.createdAt||Date.now()}]);
 }
 async function sbDeleteGenre(id){sbDelete('genres',id)}
@@ -242,31 +275,24 @@ async function fetchYT(url,cb){
   if(!title)try{var r2=await fetch('https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v='+vid+'&format=json');if(r2.ok){var d2=await r2.json();title=d2.title}}catch(e){}
   var apiKey=await getApiKey();
   if(!apiKey){if(cb)cb('Got title & thumbnail');return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'}}
-  // Try transcript first
   if(cb)cb('Fetching transcript...');
   var transcript=null;
   try{var tr=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://yt.lemnoslife.com/videos?part=transcript&id='+vid));if(tr.ok){var td=await tr.json();if(td.items&&td.items[0]&&td.items[0].transcript)transcript=td.items[0].transcript.map(function(s){return s.text||''}).join(' ').substring(0,4000)}}catch(e){}
-  // If no transcript, try video description
-  var description=null;
-  if(!transcript){
-    if(cb)cb('No transcript, trying description...');
-    try{var dr=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://yt.lemnoslife.com/videos?part=snippet&id='+vid));if(dr.ok){var dd=await dr.json();if(dd.items&&dd.items[0]&&dd.items[0].snippet&&dd.items[0].snippet.description){description=dd.items[0].snippet.description.substring(0,4000)}}}catch(e){}
-  }
-  // If we have content, use AI to extract
-  var source=transcript||description;
-  if(source){
-    if(cb)cb('AI extracting recipe...');
-    var ctx='Title: "'+(title||'Unknown')+'"\n'+(transcript?'Transcript:\n'+source+'\n':'Video description:\n'+source+'\n');
-    try{
-      var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:2000,messages:[{role:'user',content:ctx+'\nExtract the recipe from this content. Return ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null. If no clear recipe is found, return empty ingredients and instructions arrays.'}]})});
-      if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories,protein:p.protein,carbs:p.carbs,fat:p.fat,thumbnail:thumb,mode:'ai'}}
-      else{var et=await resp.text();console.log('API:',resp.status,et)}
-    }catch(e){console.log('AI fail',e)}
-  }
-  // No transcript AND no description — return with notice
-  var noticeName=(title||'Recipe');
-  var noticeInst=['\u26A0\uFE0F No transcript or description found for this video. Add ingredients and instructions manually.'];
-  return{name:noticeName,servings:4,ingredients:[],instructions:noticeInst,calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
+  if(cb)cb('AI extracting recipe...');
+  var ctx='Title: "'+(title||'Unknown')+'"\n';
+  if(transcript){ctx+='Transcript:\n'+transcript+'\n'}
+  else{ctx+='No transcript available. Provide standard recipe based on the title.\n'}
+  try{
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:2000,messages:[{role:'user',content:ctx+'\nReturn ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null.'}]})});
+    if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());
+      var result={name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories,protein:p.protein,carbs:p.carbs,fat:p.fat,thumbnail:thumb,mode:'ai'};
+      // Add warning if no transcript was found
+      if(!transcript&&result.instructions&&result.instructions.length>0){result.instructions.unshift('\u26A0\uFE0F No transcript found \u2014 recipe was estimated from the video title. Please verify ingredients and instructions.')}
+      return result;
+    }
+    else{var et=await resp.text();console.log('API:',resp.status,et)}
+  }catch(e){console.log('AI fail',e)}
+  return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
 }
 /* ===== MEAL SCANNER ===== */
 async function scanMeal(imgData,comment){
