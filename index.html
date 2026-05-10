@@ -52,6 +52,17 @@ function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 function parseAmt(s){if(!s)return null;s=s.trim();var fracs={'\u00BD':0.5,'\u00BC':0.25,'\u00BE':0.75,'\u2153':0.333,'\u2154':0.667};if(fracs[s])return fracs[s];var n=parseFloat(s);return isNaN(n)?null:n}
 function fmtAmt(n){if(n==null)return'';if(n===Math.floor(n))return''+n;return n%1>0.01?n.toFixed(1).replace(/\.0$/,''):''+Math.round(n)}
+var APP_VERSION='0.907';
+// CORS proxy with fallback
+async function corsGet(targetUrl){
+  // Try allorigins first (supports HTML, wraps in JSON)
+  try{var r=await fetch('https://api.allorigins.win/raw?url='+encodeURIComponent(targetUrl));if(r.ok)return{ok:true,text:function(){return r.text()},json:function(){return r.json()}}}catch(e){}
+  // Fallback to corsproxy.io
+  try{var r2=await fetch('https://corsproxy.io/?url='+encodeURIComponent(targetUrl));if(r2.ok)return{ok:true,text:function(){return r2.text()},json:function(){return r2.json()}}}catch(e){}
+  // Fallback to cors.sh
+  try{var r3=await fetch('https://proxy.cors.sh/'+targetUrl,{headers:{'x-cors-api-key':'temp_free_key'}});if(r3.ok)return{ok:true,text:function(){return r3.text()},json:function(){return r3.json()}}}catch(e){}
+  return{ok:false};
+}
 // Resize image to max 1600px wide, return data URL
 function resizeImg(dataUrl,maxW){
   return new Promise(function(ok){
@@ -279,7 +290,7 @@ async function fetchYT(url,cb){
   if(cb)cb('Fetching video data...');
   var transcript=null;var description=null;
   try{
-    var pageResp=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://www.youtube.com/watch?v='+vid));
+    var pageResp=await corsGet('https://www.youtube.com/watch?v='+vid);
     if(pageResp.ok){
       var html=await pageResp.text();
       // Extract description from page
@@ -296,7 +307,7 @@ async function fetchYT(url,cb){
             if(track&&track.baseUrl){
               if(cb)cb('Fetching transcript...');
               var capUrl=track.baseUrl;if(capUrl.indexOf('fmt=')===-1)capUrl+='&fmt=json3';
-              var capResp=await fetch('https://corsproxy.io/?url='+encodeURIComponent(capUrl));
+              var capResp=await corsGet(capUrl);
               if(capResp.ok){
                 var capData=await capResp.json();
                 if(capData.events){transcript=capData.events.filter(function(e){return e.segs}).map(function(e){return e.segs.map(function(s){return s.utf8||''}).join('')}).join(' ').replace(/\s+/g,' ').trim().substring(0,4000)}
@@ -338,7 +349,7 @@ async function fetchWebsite(url,cb){
   if(!apiKey)return{error:'Add API key in Settings to extract from websites'};
   if(cb)cb('Fetching page...');
   try{
-    var resp=await fetch('https://corsproxy.io/?url='+encodeURIComponent(url));
+    var resp=await corsGet(url);
     if(resp.ok){
       var html=await resp.text();
       var tm=html.match(/<title[^>]*>([^<]*)<\/title>/i);var title=tm?tm[1].trim():'';
@@ -741,7 +752,7 @@ function SSet(p){
 
     // ===== DATA SECTION =====
     h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16}},h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:8}},'DATA'),h('div',{style:{fontSize:15,color:'var(--text2)',marginBottom:16}},D.recipes.length+' recipes \xB7 '+D.genres.length+' genres'),h('button',{onClick:D.exportAll,style:{padding:'12px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:15,fontWeight:600,width:'100%',marginBottom:10}},'Export (JSON)'),h('button',{onClick:function(){iRef.current.click()},style:{padding:'12px',borderRadius:12,background:'transparent',color:'var(--pri)',fontSize:15,fontWeight:600,border:'2px solid var(--pri)',width:'100%'}},'Import'),h('input',{ref:iRef,type:'file',accept:'.json',onChange:doImp,style:{display:'none'}})),
-    h('div',{style:{padding:20,color:'var(--text2)',fontSize:13,textAlign:'center',lineHeight:1.5}},'Data stored locally on device.',sbConn?' Cloud sync enabled.':' Enable cloud sync above for backup & multi-device.')
+    h('div',{style:{padding:20,color:'var(--text2)',fontSize:13,textAlign:'center',lineHeight:1.5}},'Data stored locally on device.',sbConn?' Cloud sync enabled.':' Enable cloud sync above for backup & multi-device.',h('div',{style:{marginTop:8,fontSize:12,opacity:0.6}},'Version ',APP_VERSION))
   ));
 }
 </script>

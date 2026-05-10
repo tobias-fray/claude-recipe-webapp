@@ -26,6 +26,8 @@ self.addEventListener('fetch', e => {
   // Never cache API calls, proxies, or external service requests
   if (url.includes('api.anthropic.com') ||
       url.includes('corsproxy.io') ||
+      url.includes('allorigins.win') ||
+      url.includes('cors.sh') ||
       url.includes('noembed.com') ||
       url.includes('lemnoslife.com') ||
       url.includes('youtube.com/oembed') ||
