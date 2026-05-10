@@ -275,18 +275,40 @@ async function fetchYT(url,cb){
   if(!title)try{var r2=await fetch('https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v='+vid+'&format=json');if(r2.ok){var d2=await r2.json();title=d2.title}}catch(e){}
   var apiKey=await getApiKey();
   if(!apiKey){if(cb)cb('Got title & thumbnail');return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'}}
-  // Step 1: Try transcript
-  if(cb)cb('Fetching transcript...');
-  var transcript=null;
-  try{var tr=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://yt.lemnoslife.com/videos?part=transcript&id='+vid));if(tr.ok){var td=await tr.json();if(td.items&&td.items[0]&&td.items[0].transcript){var segs=td.items[0].transcript;if(segs.length>0)transcript=segs.map(function(s){return s.text||''}).join(' ').substring(0,4000)}}}catch(e){console.log('transcript fetch err',e)}
-  // Step 2: If no transcript, try description
-  var description=null;
-  if(!transcript){
-    if(cb)cb('No transcript, trying description...');
-    try{var dr=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://yt.lemnoslife.com/videos?part=snippet&id='+vid));if(dr.ok){var dd=await dr.json();if(dd.items&&dd.items[0]&&dd.items[0].snippet&&dd.items[0].snippet.description){var desc=dd.items[0].snippet.description;if(desc.length>20)description=desc.substring(0,4000)}}}catch(e){console.log('description fetch err',e)}
-  }
-  // Step 3: If we have either, send to AI
-  var source=transcript||description;
+  // Step 1: Fetch YouTube page HTML to find caption tracks and description
+  if(cb)cb('Fetching video data...');
+  var transcript=null;var description=null;
+  try{
+    var pageResp=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://www.youtube.com/watch?v='+vid));
+    if(pageResp.ok){
+      var html=await pageResp.text();
+      // Extract description from page
+      var descMatch=html.match(/"shortDescription"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if(descMatch){try{description=JSON.parse('"'+descMatch[1]+'"')}catch(e){description=descMatch[1].replace(/\\n/g,'\n').replace(/\\"/g,'"')}}
+      // Extract caption track URL
+      var capMatch=html.match(/"captionTracks"\s*:\s*(\[.*?\])/);
+      if(capMatch){
+        try{
+          var tracks=JSON.parse(capMatch[1]);
+          if(tracks&&tracks.length>0){
+            // Prefer non-auto tracks, then English, then first available
+            var track=tracks.find(function(t){return t.kind!=='asr'&&(t.languageCode==='en'||t.languageCode==='en-US')})||tracks.find(function(t){return t.languageCode==='en'||t.languageCode==='en-US'})||tracks.find(function(t){return t.kind!=='asr'})||tracks[0];
+            if(track&&track.baseUrl){
+              if(cb)cb('Fetching transcript...');
+              var capUrl=track.baseUrl;if(capUrl.indexOf('fmt=')===-1)capUrl+='&fmt=json3';
+              var capResp=await fetch('https://corsproxy.io/?url='+encodeURIComponent(capUrl));
+              if(capResp.ok){
+                var capData=await capResp.json();
+                if(capData.events){transcript=capData.events.filter(function(e){return e.segs}).map(function(e){return e.segs.map(function(s){return s.utf8||''}).join('')}).join(' ').replace(/\s+/g,' ').trim().substring(0,4000)}
+              }
+            }
+          }
+        }catch(e){console.log('caption parse err',e)}
+      }
+    }
+  }catch(e){console.log('page fetch err',e)}
+  // Step 2: Use transcript or description for AI extraction
+  var source=transcript||(description&&description.length>30?description.substring(0,4000):null);
   if(source){
     if(cb)cb('AI extracting recipe...');
     var ctx='Title: "'+(title||'Unknown')+'"\n'+(transcript?'Video transcript:\n':'Video description:\n')+source+'\n\nExtract the recipe from the above content. Return ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null.';
@@ -296,7 +318,7 @@ async function fetchYT(url,cb){
       else{var et=await resp.text();console.log('API:',resp.status,et)}
     }catch(e){console.log('AI fail',e)}
   }
-  // Step 4: Neither transcript nor description — warning only, no AI generation
+  // Step 3: No usable content found
   if(cb)cb('No content found');
   return{name:title||'Recipe',servings:4,ingredients:[],instructions:['\u26A0\uFE0F No transcript or description found for this video. Add ingredients and instructions manually.'],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
 }
