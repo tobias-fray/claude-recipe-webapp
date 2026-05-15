@@ -52,7 +52,7 @@ function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 function parseAmt(s){if(!s)return null;s=s.trim();var fracs={'\u00BD':0.5,'\u00BC':0.25,'\u00BE':0.75,'\u2153':0.333,'\u2154':0.667};if(fracs[s])return fracs[s];var n=parseFloat(s);return isNaN(n)?null:n}
 function fmtAmt(n){if(n==null)return'';if(n===Math.floor(n))return''+n;return n%1>0.01?n.toFixed(1).replace(/\.0$/,''):''+Math.round(n)}
-var APP_VERSION='0.908';
+var APP_VERSION='0.910';
 // CORS proxy with fallback
 async function corsGet(targetUrl){
   // Try allorigins first (supports HTML, wraps in JSON)
@@ -80,6 +80,10 @@ function resizeImg(dataUrl,maxW){
 /* ===== API KEY ===== */
 async function getApiKey(){try{var db=await odb();return new Promise(function(ok){var t=db.transaction('settings','readonly');var r=t.objectStore('settings').get('anthropic_key');r.onsuccess=function(){ok(r.result?r.result.value:null)};r.onerror=function(){ok(null)}})}catch(e){return null}}
 async function setApiKey(key){var db=await odb();return new Promise(function(ok,no){var t=db.transaction('settings','readwrite');t.objectStore('settings').put({id:'anthropic_key',value:key});t.oncomplete=function(){ok()};t.onerror=function(){no(t.error)}})}
+
+/* ===== GEMINI API KEY ===== */
+async function getGeminiKey(){try{var db=await odb();return new Promise(function(ok){var t=db.transaction('settings','readonly');var r=t.objectStore('settings').get('gemini_key');r.onsuccess=function(){ok(r.result?r.result.value:null)};r.onerror=function(){ok(null)}})}catch(e){return null}}
+async function setGeminiKey(key){var db=await odb();return new Promise(function(ok,no){var t=db.transaction('settings','readwrite');t.objectStore('settings').put({id:'gemini_key',value:key});t.oncomplete=function(){ok()};t.onerror=function(){no(t.error)}})}
 
 /* ===== SUPABASE CONFIG ===== */
 async function getSupaCfg(){try{var db=await odb();return new Promise(function(ok){var t=db.transaction('settings','readonly');var r=t.objectStore('settings').get('supabase_cfg');r.onsuccess=function(){ok(r.result?r.result.value:null)};r.onerror=function(){ok(null)}})}catch(e){return null}}
@@ -276,26 +280,54 @@ async function sbDeleteRecipe(id){sbDelete('recipes',id)}
 async function sbDeleteDiary(id){sbDelete('diary',id)}
 </script>
 <script>
-/* ===== YT EXTRACTION ===== */
+/* ===== YT EXTRACTION (Gemini) ===== */
 async function fetchYT(url,cb){
   var vid=ytId(url);if(!vid)return{error:'Invalid YouTube URL'};
   var thumb='https://img.youtube.com/vi/'+vid+'/hqdefault.jpg';
+  var ytUrl='https://www.youtube.com/watch?v='+vid;
   if(cb)cb('Fetching video info...');
   var title=null;
-  try{var r=await fetch('https://noembed.com/embed?url=https://www.youtube.com/watch?v='+vid);if(r.ok){var d=await r.json();title=d.title}}catch(e){}
-  if(!title)try{var r2=await fetch('https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v='+vid+'&format=json');if(r2.ok){var d2=await r2.json();title=d2.title}}catch(e){}
-  var apiKey=await getApiKey();
-  if(!apiKey){if(cb)cb('Got title & thumbnail');return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'}}
+  try{var r=await fetch('https://noembed.com/embed?url='+ytUrl);if(r.ok){var d=await r.json();title=d.title}}catch(e){}
+  if(!title)try{var r2=await fetch('https://www.youtube.com/oembed?url='+ytUrl+'&format=json');if(r2.ok){var d2=await r2.json();title=d2.title}}catch(e){}
+  var geminiKey=await getGeminiKey();
+  if(!geminiKey){if(cb)cb('Got title & thumbnail');return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'}}
+  if(cb)cb('Gemini analyzing video...');
+  try{
+    var resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='+geminiKey,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{parts:[
+        {fileData:{mimeType:'video/*',fileUri:ytUrl}},
+        {text:'Analyze this YouTube video to extract a recipe. Use ALL available information: the video description (which often has exact measurements and instructions), the spoken audio, any on-screen text, and visual cooking steps. If the description contains a written recipe, prioritize those exact measurements.\n\nReturn ONLY valid JSON with no other text:\n{"name":"Recipe name","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1","Step 2"],"calories":400,"protein":25,"carbs":50,"fat":15}\n\nRules: metric units only (g, kg, ml, L). amount must be a string. instructions as array of clear steps. Nutrition per serving as integers or null if unknown.'}
+      ]}]})
+    });
+    if(resp.ok){
+      var data=await resp.json();
+      var txt='';if(data.candidates&&data.candidates[0]&&data.candidates[0].content&&data.candidates[0].content.parts){txt=data.candidates[0].content.parts.map(function(p){return p.text||''}).join('')}
+      var clean=txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();
+      var p=JSON.parse(clean);
+      return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories||null,protein:p.protein||null,carbs:p.carbs||null,fat:p.fat||null,thumbnail:thumb,mode:'ai'}
+    }else{var et=await resp.text();console.log('Gemini err:',resp.status,et);
+      // Fallback: try with Anthropic if available
+      var apiKey=await getApiKey();
+      if(apiKey){if(cb)cb('Gemini failed, trying Claude...');return await fetchYT_claude(vid,title,thumb,apiKey,cb)}
+    }
+  }catch(e){console.log('Gemini fail',e);
+    var apiKey=await getApiKey();
+    if(apiKey){if(cb)cb('Gemini failed, trying Claude...');return await fetchYT_claude(vid,title,thumb,apiKey,cb)}
+  }
+  return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
+}
+// Claude fallback for YT extraction (transcript-based)
+async function fetchYT_claude(vid,title,thumb,apiKey,cb){
   if(cb)cb('Fetching transcript...');
   var transcript=null;
-  try{var tr=await corsGet('https://www.youtube.com/watch?v='+vid);if(tr.ok){var html=await tr.text();var capMatch=html.match(/"captionTracks"\s*:\s*(\[.*?\])/);if(capMatch){var tracks=JSON.parse(capMatch[1]);if(tracks&&tracks.length>0){var track=tracks.find(function(t){return t.kind!=='asr'&&/^en/.test(t.languageCode)})||tracks.find(function(t){return/^en/.test(t.languageCode)})||tracks.find(function(t){return t.kind!=='asr'})||tracks[0];if(track&&track.baseUrl){if(cb)cb('Reading captions...');var capUrl=track.baseUrl;if(capUrl.indexOf('fmt=')===-1)capUrl+='&fmt=json3';var capResp=await corsGet(capUrl);if(capResp.ok){var capData=await capResp.json();if(capData.events)transcript=capData.events.filter(function(e){return e.segs}).map(function(e){return e.segs.map(function(s){return s.utf8||''}).join('')}).join(' ').replace(/\s+/g,' ').trim().substring(0,4000)}}}}}}catch(e){console.log('transcript err',e)}
+  try{var tr=await corsGet('https://www.youtube.com/watch?v='+vid);if(tr.ok){var html=await tr.text();var capMatch=html.match(/"captionTracks"\s*:\s*(\[.*?\])/);if(capMatch){var tracks=JSON.parse(capMatch[1]);if(tracks&&tracks.length>0){var track=tracks.find(function(t){return t.kind!=='asr'&&/^en/.test(t.languageCode)})||tracks.find(function(t){return/^en/.test(t.languageCode)})||tracks[0];if(track&&track.baseUrl){var capUrl=track.baseUrl;if(capUrl.indexOf('fmt=')===-1)capUrl+='&fmt=json3';var capResp=await corsGet(capUrl);if(capResp.ok){var capData=await capResp.json();if(capData.events)transcript=capData.events.filter(function(e){return e.segs}).map(function(e){return e.segs.map(function(s){return s.utf8||''}).join('')}).join(' ').replace(/\s+/g,' ').trim().substring(0,4000)}}}}}}catch(e){}
   if(cb)cb('AI extracting recipe...');
   var ctx='Title: "'+(title||'Unknown')+'"\n'+(transcript?'Transcript:\n'+transcript+'\n':'No transcript available. Provide the standard recipe for this dish.\n');
   try{
-    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:2000,messages:[{role:'user',content:ctx+'\nReturn ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null.'}]})});
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,messages:[{role:'user',content:ctx+'\nReturn ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null.'}]})});
     if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories,protein:p.protein,carbs:p.carbs,fat:p.fat,thumbnail:thumb,mode:'ai'}}
-    else{var et=await resp.text();console.log('API:',resp.status,et)}
-  }catch(e){console.log('AI fail',e)}
+  }catch(e){}
   return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
 }
 /* ===== MEAL SCANNER ===== */
@@ -303,7 +335,7 @@ async function scanMeal(imgData,comment){
   var apiKey=await getApiKey();if(!apiKey)return{error:'Add API key in Settings'};
   var b64=imgData.split(',')[1],mt=imgData.match(/data:(.*?);/)[1];
   try{
-    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:500,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:mt,data:b64}},{type:'text',text:'Estimate nutrition for this meal.'+(comment?' Info: '+comment:'')+'\nReturn ONLY JSON: {"description":"...","calories":500,"protein":30,"carbs":60,"fat":20,"confidence":"medium"}'}]}]})});
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:mt,data:b64}},{type:'text',text:'Estimate nutrition for this meal.'+(comment?' Info: '+comment:'')+'\nReturn ONLY JSON: {"description":"...","calories":500,"protein":30,"carbs":60,"fat":20,"confidence":"medium"}'}]}]})});
     if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');return JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim())}
     return{error:'API error '+resp.status}
   }catch(e){return{error:e.message}}
@@ -325,7 +357,7 @@ async function fetchWebsite(url,cb){
       if(cb)cb('AI extracting recipe...');
       try{
         var prompt='Website title: "'+title+'"\nPage content:\n'+text+'\n\nExtract the recipe. Return ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric units. Nutrition per serving integers or null.';
-        var ar=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:2000,messages:[{role:'user',content:prompt}]})});
+        var ar=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,messages:[{role:'user',content:prompt}]})});
         if(ar.ok){var data=await ar.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories,protein:p.protein,carbs:p.carbs,fat:p.fat,thumbnail:ogImg,mode:'ai'}}
         else return{name:title,thumbnail:ogImg,ingredients:[],instructions:[],mode:'basic'}
       }catch(e){return{name:title,thumbnail:ogImg,ingredients:[],instructions:[],mode:'basic'}}
@@ -529,7 +561,12 @@ function SDet(p){
   var D=useData();var recipe=D.recipes.find(function(r){return r.id===p.recipe.id})||p.recipe;var recipeGenres=D.genres.filter(function(g){return rInGenre(recipe,g.id)});
   var _m=us(false),menu=_m[0],sMenu=_m[1];var _i=us(0),ii=_i[0],sII=_i[1];
   var defServ=recipe.servings||1;var _sv=us(defServ),sv=_sv[0],sSv=_sv[1];
-  var imgs=(recipe.images||[]).slice();var yt=ytT(recipe.youtubeUrl);if(yt)imgs.push(yt);
+  // Load diary images to include in carousel
+  var _diaryImgs=us([]),diaryImgs=_diaryImgs[0],sDiaryImgs=_diaryImgs[1];
+  ue(function(){D.getDiary(recipe.id).then(function(entries){var di=[];entries.forEach(function(e){if(e.image){var recImgs=recipe.images||[];var alreadyIn=recImgs.indexOf(e.image)!==-1;if(!alreadyIn&&di.indexOf(e.image)===-1)di.push(e.image)}});sDiaryImgs(di)})},[recipe.id]);
+  var imgs=(recipe.images||[]).slice();var yt=ytT(recipe.youtubeUrl);if(yt&&imgs.indexOf(yt)===-1)imgs.push(yt);
+  // Append diary images (deduplicated)
+  diaryImgs.forEach(function(di){if(imgs.indexOf(di)===-1)imgs.push(di)});
   var hasN=recipe.calories!=null||recipe.protein!=null||recipe.carbs!=null||recipe.fat!=null;
   var steps=[];if(recipe.instructions){steps=Array.isArray(recipe.instructions)?recipe.instructions:recipe.instructions.split('\n').filter(function(s){return s.trim()})}
   var hb=imgs.length>0;var tX=ur(0);
@@ -635,6 +672,9 @@ function SSet(p){
   // API Key state
   var _ak=us(''),ak=_ak[0],sAk=_ak[1];var _akL=us(false),akL=_akL[0],sAkL=_akL[1];
   var _skv=us(false),skv=_skv[0],sSkv=_skv[1];var _akM=us(null),akM=_akM[0],sAkM=_akM[1];
+  // Gemini key state
+  var _gk=us(''),gk=_gk[0],sGk=_gk[1];var _gkL=us(false),gkL=_gkL[0],sGkL=_gkL[1];
+  var _gkv=us(false),gkv=_gkv[0],sGkv=_gkv[1];var _gkM=us(null),gkM=_gkM[0],sGkM=_gkM[1];
   // Supabase state
   var _sbUrl=us(''),sbUrl=_sbUrl[0],sSbUrl=_sbUrl[1];
   var _sbKey=us(''),sbKey=_sbKey[0],sSbKey=_sbKey[1];
@@ -644,10 +684,12 @@ function SSet(p){
 
   ue(function(){
     getApiKey().then(function(k){sAk(k||'');sAkL(true)});
+    getGeminiKey().then(function(k){sGk(k||'');sGkL(true)});
     getSupaCfg().then(function(cfg){if(cfg){sSbUrl(cfg.url||'');sSbKey(cfg.key||'');sSbConn(!!(cfg.url&&cfg.key))}sSbL(true)});
   },[]);
 
   async function saveKey(){await setApiKey(ak.trim()||null);sAkM(ak.trim()?'Key saved!':'Key removed');setTimeout(function(){sAkM(null)},2000)}
+  async function saveGeminiKey(){await setGeminiKey(gk.trim()||null);sGkM(gk.trim()?'Key saved!':'Key removed');setTimeout(function(){sGkM(null)},2000)}
   async function saveSupa(){
     if(!sbUrl.trim()||!sbKey.trim()){alert('Both URL and Key are required');return}
     var cfg={url:sbUrl.trim().replace(/\/$/,''),key:sbKey.trim()};
@@ -710,8 +752,16 @@ function SSet(p){
       ):h('div',{className:'sp spd'})
     ),
 
-    // ===== API KEY SECTION =====
-    h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16,marginBottom:12}},h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:4}},'AI FEATURES'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'API key enables: YouTube recipe extraction, website recipe extraction, meal photo scanning.'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Get key: ',h('a',{href:'https://console.anthropic.com/settings/keys',target:'_blank',style:{color:'var(--pri)',fontWeight:600}},'console.anthropic.com')),
+    // ===== GEMINI KEY SECTION =====
+    h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16,marginBottom:12}},
+      h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:4}},'YOUTUBE EXTRACTION (GEMINI)'),
+      h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Gemini analyzes YouTube videos directly \u2014 audio, visuals, description, and on-screen text. Works with Shorts too.'),
+      h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Get key: ',h('a',{href:'https://aistudio.google.com/apikey',target:'_blank',style:{color:'var(--pri)',fontWeight:600}},'aistudio.google.com')),
+      gkL?h('div',null,h('div',{style:{position:'relative',marginBottom:8}},h('input',{value:gk,onChange:function(e){sGk(e.target.value)},type:gkv?'text':'password',placeholder:'AIza...',style:Object.assign({},inp,{paddingRight:44})}),h('button',{onClick:function(){sGkv(!gkv)},style:{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',color:'var(--text2)',fontSize:12}},gkv?'Hide':'Show')),h('button',{onClick:saveGeminiKey,style:{padding:'10px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:14,fontWeight:600,width:'100%'}},gk.trim()?'Save Key':'Remove Key'),gkM?h('div',{style:{fontSize:13,color:'var(--grn)',marginTop:8,textAlign:'center'}},gkM):null,h('div',{style:{fontSize:12,color:gk.trim()?'var(--grn)':'var(--text2)',marginTop:8}},gk.trim()?'\u2705 YouTube AI enabled':'\u274C Title & thumbnail only')):h('div',{className:'sp spd'})
+    ),
+
+    // ===== CLAUDE API KEY SECTION =====
+    h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16,marginBottom:12}},h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:4}},'WEBSITE & MEAL SCANNING (CLAUDE)'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Claude Sonnet analyzes website content and meal photos. Also used as fallback for YouTube if Gemini is unavailable.'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Get key: ',h('a',{href:'https://console.anthropic.com/settings/keys',target:'_blank',style:{color:'var(--pri)',fontWeight:600}},'console.anthropic.com')),
       akL?h('div',null,h('div',{style:{position:'relative',marginBottom:8}},h('input',{value:ak,onChange:function(e){sAk(e.target.value)},type:skv?'text':'password',placeholder:'sk-ant-...',style:Object.assign({},inp,{paddingRight:44})}),h('button',{onClick:function(){sSkv(!skv)},style:{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',color:'var(--text2)',fontSize:12}},skv?'Hide':'Show')),h('button',{onClick:saveKey,style:{padding:'10px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:14,fontWeight:600,width:'100%'}},ak.trim()?'Save Key':'Remove Key'),akM?h('div',{style:{fontSize:13,color:'var(--grn)',marginTop:8,textAlign:'center'}},akM):null,h('div',{style:{fontSize:12,color:ak.trim()?'var(--grn)':'var(--text2)',marginTop:8}},ak.trim()?'\u2705 AI enabled':'\u274C Basic mode')):h('div',{className:'sp spd'})
     ),
 
