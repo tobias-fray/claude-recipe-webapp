@@ -52,7 +52,7 @@ function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 function parseAmt(s){if(!s)return null;s=s.trim();var fracs={'\u00BD':0.5,'\u00BC':0.25,'\u00BE':0.75,'\u2153':0.333,'\u2154':0.667};if(fracs[s])return fracs[s];var n=parseFloat(s);return isNaN(n)?null:n}
 function fmtAmt(n){if(n==null)return'';if(n===Math.floor(n))return''+n;return n%1>0.01?n.toFixed(1).replace(/\.0$/,''):''+Math.round(n)}
-var APP_VERSION='0.958';
+var APP_VERSION='0.961';
 // CORS proxy with fallback
 async function corsGet(targetUrl){
   // Try allorigins first (supports HTML, wraps in JSON)
@@ -226,15 +226,18 @@ async function sbSync(localGenres,localRecipes){
     // Write merged remote data to local
     if(changed){
       for(var i=0;i<mergedG.length;i++){
-        if(!lgMap[mergedG[i].id])await dPut('genres',mergedG[i]);
+        if(!lgMap[mergedG[i].id]||mergedG[i]!==lgMap[mergedG[i].id])await dPut('genres',mergedG[i]);
       }
       for(var i=0;i<mergedR.length;i++){
-        if(!lrMap[mergedR[i].id]){
-          // Convert remote format to local format
-          var rr=mergedR[i];
+        var rr=mergedR[i];
+        // Convert remote format to local format if needed (snake_case → camelCase)
+        if(rr.genre_ids!==undefined||rr.youtube_url!==undefined||rr.cover_index!==undefined||rr.created_at!==undefined){
           var local={id:rr.id,name:rr.name,genreIds:rr.genre_ids||rGids(rr),images:rr.images||[],youtubeUrl:rr.youtube_url||rr.youtubeUrl||null,websiteUrl:rr.website_url||rr.websiteUrl||null,instructions:rr.instructions||[],calories:rr.calories,protein:rr.protein,carbs:rr.carbs,fat:rr.fat,servings:rr.servings||1,ingredients:rr.ingredients||[],coverIndex:rr.cover_index!=null?rr.cover_index:(rr.coverIndex||0),hidden:rr.hidden||false,rating:rr.rating||0,createdAt:rr.created_at||rr.createdAt||Date.now(),updatedAt:rr.updated_at||rr.updatedAt||Date.now()};
           await dPut('recipes',local);
           mergedR[i]=local;
+        }else if(!lrMap[rr.id]){
+          // Brand new recipe from cloud, already in local format
+          await dPut('recipes',rr);
         }
       }
     }
@@ -262,7 +265,8 @@ async function sbPushRecipe(rec){
     }else{cloudImgs.push(im)}
   }
   // Write cloud URLs back to local DB so we don't re-upload next time
-  if(localChanged){rec.images=li;await dPut('recipes',rec)}
+  if(localChanged){rec.images=li.filter(function(x){return x&&x.length>5});await dPut('recipes',rec)}
+  cloudImgs=cloudImgs.filter(function(x){return x&&x.length>5});
   sbUpsert('recipes',[{id:rec.id,name:rec.name,genre_ids:rGids(rec),images:cloudImgs,youtube_url:rec.youtubeUrl||null,website_url:rec.websiteUrl||null,instructions:rec.instructions||[],calories:rec.calories,protein:rec.protein,carbs:rec.carbs,fat:rec.fat,servings:rec.servings||1,ingredients:rec.ingredients||[],cover_index:rec.coverIndex||0,hidden:rec.hidden||false,rating:rec.rating||0,created_at:rec.createdAt||Date.now(),updated_at:rec.updatedAt||Date.now()}]);
 }
 async function sbPushDiary(d){
@@ -457,7 +461,7 @@ function NI(p){return h('div',{style:{textAlign:'center'}},h('div',{style:{fontS
 function Stars(p){var rating=p.rating||0;var sz=p.size||18;var interactive=p.onRate;return h('div',{style:Object.assign({display:'flex',gap:2,alignItems:'center'},p.style||{})},
   [1,2,3,4,5].map(function(n){var filled=n<=rating;return h('button',{key:n,onClick:interactive?function(){p.onRate(n===rating?0:n)}:null,style:{padding:0,display:'flex',color:filled?'#F9A825':'var(--brd)',cursor:interactive?'pointer':'default'}},h('svg',{width:sz,height:sz,viewBox:'0 0 24 24',fill:filled?'#F9A825':'none',stroke:filled?'#F9A825':'var(--brd)',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'},h('polygon',{points:'12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2'})))})
 )}
-function RImg(p){var r=p.recipe;var ci=r.coverIndex||0;var allImgs=(r.images||[]).slice();var yt=ytT(r.youtubeUrl);if(yt)allImgs.push(yt);var src=allImgs[ci]||allImgs[0];if(src)return h('img',{src:src,alt:r.name,style:Object.assign({width:'100%',height:'100%',objectFit:'cover',display:'block'},p.style||{})});return h('div',{style:Object.assign({width:'100%',height:'100%',background:'#F5EDE6',display:'flex',alignItems:'center',justifyContent:'center'},p.style||{})},h(Ic,{name:'food',size:40,color:'var(--text2)'}))}
+function RImg(p){var r=p.recipe;var ci=r.coverIndex||0;var allImgs=(r.images||[]).filter(function(im){return im&&im.length>5}).slice();var yt=ytT(r.youtubeUrl);if(yt&&allImgs.indexOf(yt)===-1)allImgs.push(yt);var src=allImgs[ci]||allImgs[0];if(src)return h('img',{src:src,alt:r.name,onError:function(e){e.target.style.display='none'},style:Object.assign({width:'100%',height:'100%',objectFit:'cover',display:'block'},p.style||{})});return h('div',{style:Object.assign({width:'100%',height:'100%',background:'#F5EDE6',display:'flex',alignItems:'center',justifyContent:'center'},p.style||{})},h(Ic,{name:'food',size:40,color:'var(--text2)'}))}
 function RCard(p){var r=p.recipe;return h('div',{onClick:p.onClick,className:'fi',style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',overflow:'hidden',cursor:'pointer',opacity:r.hidden?0.5:1}},h('div',{style:{aspectRatio:'4/3',overflow:'hidden',position:'relative'}},h(RImg,{recipe:r}),r.hidden?h('div',{style:{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.5)',borderRadius:6,padding:'2px 6px'}},h(Ic,{name:'eyeOff',size:14,color:'#fff'})):null),h('div',{style:{padding:12}},h('div',{style:{fontSize:15,fontWeight:600,lineHeight:1.25,marginBottom:4,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}},r.name),r.rating?h(Stars,{rating:r.rating,size:14,style:{marginBottom:4}}):h('div',{style:{fontSize:11,color:'var(--brd)',marginBottom:4,fontStyle:'italic'}},'Not rated'),h('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},r.calories!=null?h('span',{style:{display:'inline-flex',padding:'3px 8px',borderRadius:8,background:'var(--obg)',color:'var(--org)',fontSize:11,fontWeight:600}},Math.round(r.calories)+' cal'):null,r.protein!=null?h('span',{style:{display:'inline-flex',padding:'3px 8px',borderRadius:8,background:'var(--gbg)',color:'var(--grn)',fontSize:11,fontWeight:600}},Math.round(r.protein)+'g prot'):null)))}
 function GTile(p){var g=p.genre,tr=ur(null);return h('div',{onClick:p.onClick,onTouchStart:function(){if(p.onLongPress)tr.current=setTimeout(p.onLongPress,500)},onTouchEnd:function(){clearTimeout(tr.current)},onTouchMove:function(){clearTimeout(tr.current)},className:'fi',style:{display:'flex',alignItems:'center',padding:16,background:'var(--card)',borderRadius:14,border:'1px solid var(--brd)',cursor:'pointer',marginBottom:8}},h('div',{style:{width:48,height:48,borderRadius:12,background:'var(--bg)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,flexShrink:0}},g.emoji||'\uD83C\uDF7D\uFE0F'),h('div',{style:{flex:1,marginLeft:14}},h('div',{style:{fontSize:16,fontWeight:600}},g.name),h('div',{style:{fontSize:13,color:'var(--text2)'}},p.count+' recipe'+(p.count!==1?'s':''))),h(Ic,{name:'chevron',size:20,color:'var(--text2)'}))}
 </script>
