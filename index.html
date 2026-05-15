@@ -52,7 +52,7 @@ function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 function parseAmt(s){if(!s)return null;s=s.trim();var fracs={'\u00BD':0.5,'\u00BC':0.25,'\u00BE':0.75,'\u2153':0.333,'\u2154':0.667};if(fracs[s])return fracs[s];var n=parseFloat(s);return isNaN(n)?null:n}
 function fmtAmt(n){if(n==null)return'';if(n===Math.floor(n))return''+n;return n%1>0.01?n.toFixed(1).replace(/\.0$/,''):''+Math.round(n)}
-var APP_VERSION='0.910';
+var APP_VERSION='0.958';
 // CORS proxy with fallback
 async function corsGet(targetUrl){
   // Try allorigins first (supports HTML, wraps in JSON)
