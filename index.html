@@ -52,7 +52,7 @@ function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 function parseAmt(s){if(!s)return null;s=s.trim();var fracs={'\u00BD':0.5,'\u00BC':0.25,'\u00BE':0.75,'\u2153':0.333,'\u2154':0.667};if(fracs[s])return fracs[s];var n=parseFloat(s);return isNaN(n)?null:n}
 function fmtAmt(n){if(n==null)return'';if(n===Math.floor(n))return''+n;return n%1>0.01?n.toFixed(1).replace(/\.0$/,''):''+Math.round(n)}
-var APP_VERSION='0.961';
+var APP_VERSION='0.968';
 // CORS proxy with fallback
 async function corsGet(targetUrl){
   // Try allorigins first (supports HTML, wraps in JSON)
@@ -223,20 +223,27 @@ async function sbSync(localGenres,localRecipes){
       var dRows=pushD.map(function(d){return{id:d.id,recipe_id:d.recipeId,date:d.date,comment:d.comment||null,image:d.cloudImage||null,scan:d.scan||null,created_at:d.createdAt||Date.now()}});
       await sbUpsert('diary',dRows);
     }
-    // Write merged remote data to local
-    if(changed){
-      for(var i=0;i<mergedG.length;i++){
-        if(!lgMap[mergedG[i].id]||mergedG[i]!==lgMap[mergedG[i].id])await dPut('genres',mergedG[i]);
+    // Write merged data to local IndexedDB
+    // Always write genres from cloud that are new or won the merge
+    for(var i=0;i<mergedG.length;i++){
+      var mg=mergedG[i];
+      if(!lgMap[mg.id]||mg!==lgMap[mg.id]){
+        // Convert snake_case if needed
+        if(mg.created_at!==undefined&&mg.createdAt===undefined){mg.createdAt=mg.created_at;mg.updatedAt=mg.updated_at||mg.created_at}
+        await dPut('genres',mg);
       }
-      for(var i=0;i<mergedR.length;i++){
-        var rr=mergedR[i];
-        // Convert remote format to local format if needed (snake_case → camelCase)
+    }
+    // Write recipes from cloud
+    for(var i=0;i<mergedR.length;i++){
+      var rr=mergedR[i];
+      var isFromCloud=!lrMap[rr.id]||rr!==lrMap[rr.id];
+      if(isFromCloud){
+        // Convert remote snake_case to local camelCase
         if(rr.genre_ids!==undefined||rr.youtube_url!==undefined||rr.cover_index!==undefined||rr.created_at!==undefined){
-          var local={id:rr.id,name:rr.name,genreIds:rr.genre_ids||rGids(rr),images:rr.images||[],youtubeUrl:rr.youtube_url||rr.youtubeUrl||null,websiteUrl:rr.website_url||rr.websiteUrl||null,instructions:rr.instructions||[],calories:rr.calories,protein:rr.protein,carbs:rr.carbs,fat:rr.fat,servings:rr.servings||1,ingredients:rr.ingredients||[],coverIndex:rr.cover_index!=null?rr.cover_index:(rr.coverIndex||0),hidden:rr.hidden||false,rating:rr.rating||0,createdAt:rr.created_at||rr.createdAt||Date.now(),updatedAt:rr.updated_at||rr.updatedAt||Date.now()};
+          var local={id:rr.id,name:rr.name,genreIds:rr.genre_ids||rGids(rr),images:(rr.images||[]).filter(function(x){return x&&x.length>5}),youtubeUrl:rr.youtube_url||rr.youtubeUrl||null,websiteUrl:rr.website_url||rr.websiteUrl||null,instructions:rr.instructions||[],calories:rr.calories,protein:rr.protein,carbs:rr.carbs,fat:rr.fat,servings:rr.servings||1,ingredients:rr.ingredients||[],coverIndex:rr.cover_index!=null?rr.cover_index:(rr.coverIndex||0),hidden:rr.hidden||false,rating:rr.rating||0,createdAt:rr.created_at||rr.createdAt||Date.now(),updatedAt:rr.updated_at||rr.updatedAt||Date.now()};
           await dPut('recipes',local);
           mergedR[i]=local;
-        }else if(!lrMap[rr.id]){
-          // Brand new recipe from cloud, already in local format
+        }else{
           await dPut('recipes',rr);
         }
       }
@@ -301,7 +308,7 @@ async function fetchYT(url,cb){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({contents:[{parts:[
         {fileData:{mimeType:'video/*',fileUri:ytUrl}},
-        {text:'Analyze this YouTube video to extract a recipe. Use ALL available information: the video description (which often has exact measurements and instructions), the spoken audio, any on-screen text, and visual cooking steps. If the description contains a written recipe, prioritize those exact measurements.\n\nReturn ONLY valid JSON with no other text:\n{"name":"Recipe name","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1","Step 2"],"calories":400,"protein":25,"carbs":50,"fat":15}\n\nRules: metric units only (g, kg, ml, L). amount must be a string. instructions as array of clear steps. Nutrition per serving as integers or null if unknown.'}
+        {text:'Analyze this YouTube video to extract a recipe. Use ALL available information: the video description (which often has exact measurements and instructions), the spoken audio, any on-screen text, and visual cooking steps. If the description contains a written recipe, prioritize those exact measurements.\n\nIMPORTANT: If the recipe has distinct components (e.g. sauce, dough, filling, marinade, topping, glaze, garnish), split them into sections. Use section headers like "--- Dough ---" or "--- Sauce ---" as separate items in the ingredients array (with empty amount and unit), and use step prefixes like "DOUGH: " or "SAUCE: " in the instructions to group them.\n\nReturn ONLY valid JSON with no other text:\n{"name":"Recipe name","servings":4,"ingredients":[{"amount":"","unit":"","name":"--- Dough ---"},{"amount":"200","unit":"g","name":"flour"},{"amount":"","unit":"","name":"--- Sauce ---"},{"amount":"100","unit":"ml","name":"cream"}],"instructions":["DOUGH: Mix flour and water.","DOUGH: Knead for 5 minutes.","SAUCE: Heat cream in a pan."],"calories":400,"protein":25,"carbs":50,"fat":15}\n\nRules: metric units only (g, kg, ml, L). amount must be a string. instructions as array of clear steps. Nutrition per serving as integers or null if unknown. Only use section headers if there are clearly distinct components.'}
       ]}]})
     });
     if(resp.ok){
@@ -461,7 +468,7 @@ function NI(p){return h('div',{style:{textAlign:'center'}},h('div',{style:{fontS
 function Stars(p){var rating=p.rating||0;var sz=p.size||18;var interactive=p.onRate;return h('div',{style:Object.assign({display:'flex',gap:2,alignItems:'center'},p.style||{})},
   [1,2,3,4,5].map(function(n){var filled=n<=rating;return h('button',{key:n,onClick:interactive?function(){p.onRate(n===rating?0:n)}:null,style:{padding:0,display:'flex',color:filled?'#F9A825':'var(--brd)',cursor:interactive?'pointer':'default'}},h('svg',{width:sz,height:sz,viewBox:'0 0 24 24',fill:filled?'#F9A825':'none',stroke:filled?'#F9A825':'var(--brd)',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'},h('polygon',{points:'12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2'})))})
 )}
-function RImg(p){var r=p.recipe;var ci=r.coverIndex||0;var allImgs=(r.images||[]).filter(function(im){return im&&im.length>5}).slice();var yt=ytT(r.youtubeUrl);if(yt&&allImgs.indexOf(yt)===-1)allImgs.push(yt);var src=allImgs[ci]||allImgs[0];if(src)return h('img',{src:src,alt:r.name,onError:function(e){e.target.style.display='none'},style:Object.assign({width:'100%',height:'100%',objectFit:'cover',display:'block'},p.style||{})});return h('div',{style:Object.assign({width:'100%',height:'100%',background:'#F5EDE6',display:'flex',alignItems:'center',justifyContent:'center'},p.style||{})},h(Ic,{name:'food',size:40,color:'var(--text2)'}))}
+function RImg(p){var r=p.recipe;var ci=r.coverIndex||0;var allImgs=(r.images||[]).filter(function(im){return im&&im.length>5}).slice();var yt=ytT(r.youtubeUrl);if(yt){var ytVid=ytId(r.youtubeUrl);var hasSameYt=allImgs.some(function(im){return im.indexOf('img.youtube.com')!==-1&&ytVid&&im.indexOf(ytVid)!==-1});if(!hasSameYt)allImgs.push(yt)}var src=allImgs[ci]||allImgs[0];if(src)return h('img',{src:src,alt:r.name,onError:function(e){e.target.style.display='none'},style:Object.assign({width:'100%',height:'100%',objectFit:'cover',display:'block'},p.style||{})});return h('div',{style:Object.assign({width:'100%',height:'100%',background:'#F5EDE6',display:'flex',alignItems:'center',justifyContent:'center'},p.style||{})},h(Ic,{name:'food',size:40,color:'var(--text2)'}))}
 function RCard(p){var r=p.recipe;return h('div',{onClick:p.onClick,className:'fi',style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',overflow:'hidden',cursor:'pointer',opacity:r.hidden?0.5:1}},h('div',{style:{aspectRatio:'4/3',overflow:'hidden',position:'relative'}},h(RImg,{recipe:r}),r.hidden?h('div',{style:{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.5)',borderRadius:6,padding:'2px 6px'}},h(Ic,{name:'eyeOff',size:14,color:'#fff'})):null),h('div',{style:{padding:12}},h('div',{style:{fontSize:15,fontWeight:600,lineHeight:1.25,marginBottom:4,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}},r.name),r.rating?h(Stars,{rating:r.rating,size:14,style:{marginBottom:4}}):h('div',{style:{fontSize:11,color:'var(--brd)',marginBottom:4,fontStyle:'italic'}},'Not rated'),h('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},r.calories!=null?h('span',{style:{display:'inline-flex',padding:'3px 8px',borderRadius:8,background:'var(--obg)',color:'var(--org)',fontSize:11,fontWeight:600}},Math.round(r.calories)+' cal'):null,r.protein!=null?h('span',{style:{display:'inline-flex',padding:'3px 8px',borderRadius:8,background:'var(--gbg)',color:'var(--grn)',fontSize:11,fontWeight:600}},Math.round(r.protein)+'g prot'):null)))}
 function GTile(p){var g=p.genre,tr=ur(null);return h('div',{onClick:p.onClick,onTouchStart:function(){if(p.onLongPress)tr.current=setTimeout(p.onLongPress,500)},onTouchEnd:function(){clearTimeout(tr.current)},onTouchMove:function(){clearTimeout(tr.current)},className:'fi',style:{display:'flex',alignItems:'center',padding:16,background:'var(--card)',borderRadius:14,border:'1px solid var(--brd)',cursor:'pointer',marginBottom:8}},h('div',{style:{width:48,height:48,borderRadius:12,background:'var(--bg)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,flexShrink:0}},g.emoji||'\uD83C\uDF7D\uFE0F'),h('div',{style:{flex:1,marginLeft:14}},h('div',{style:{fontSize:16,fontWeight:600}},g.name),h('div',{style:{fontSize:13,color:'var(--text2)'}},p.count+' recipe'+(p.count!==1?'s':''))),h(Ic,{name:'chevron',size:20,color:'var(--text2)'}))}
 </script>
@@ -538,11 +545,11 @@ function SAll(p){
   function grid(list){return h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax('+gridMin+'px, 1fr))',gap:12,padding:'0 16px'}},list.map(function(r){return h(RCard,{key:r.id,recipe:r,onClick:function(){p.onOpenRecipe(r)}})}))}
   var body;
   if(sorted.length===0)body=h('div',{style:{textAlign:'center',padding:40,color:'var(--text2)'}},h(Ic,{name:'search',size:40,color:'var(--text2)'}),h('div',{style:{marginTop:12,fontSize:16}},sr?'No results':'No recipes yet'));
-  else if(grp){var secs=[];D.genres.forEach(function(g){var l=sorted.filter(function(r){return rInGenre(r,g.id)});if(l.length)secs.push(h('div',{key:g.id},h('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'16px 16px 10px',fontSize:17,fontWeight:700}},(g.emoji||'\uD83C\uDF7D\uFE0F')+' '+g.name),grid(l)))});var uc2=sorted.filter(function(r){return rUncategorized(r)});if(uc2.length)secs.push(h('div',{key:'_u'},h('div',{style:{padding:'16px 16px 10px',fontSize:17,fontWeight:700}},'\uD83D\uDCCB Uncategorized'),grid(uc2)));body=h(F,null,secs)}
+  else if(grp){var secs=[];D.genres.forEach(function(g){var l=sorted.filter(function(r){return rInGenre(r,g.id)});if(l.length)secs.push(h('div',{key:g.id},h('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'16px 16px 10px',fontSize:17,fontWeight:700}},(g.emoji||'\uD83C\uDF7D\uFE0F')+' '+g.name,h('span',{style:{fontSize:13,fontWeight:500,color:'var(--text2)'}},l.length)),grid(l)))});var uc2=sorted.filter(function(r){return rUncategorized(r)});if(uc2.length)secs.push(h('div',{key:'_u'},h('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'16px 16px 10px',fontSize:17,fontWeight:700}},'\uD83D\uDCCB Uncategorized',h('span',{style:{fontSize:13,fontWeight:500,color:'var(--text2)'}},uc2.length)),grid(uc2)));body=h(F,null,secs)}
   else body=grid(sorted);
   var hiddenCount=D.recipes.filter(function(r){return r.hidden}).length;
   return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},
-    h('div',{style:topBar},h('div',{style:{fontFamily:'var(--serif)',fontSize:26,flex:1}},'All Recipes'),h('button',{onClick:cycleGrid,style:{color:'var(--text2)',marginRight:4,fontSize:11,fontWeight:700,padding:'4px 8px',borderRadius:6,background:'var(--bg)',border:'1px solid var(--brd)'}},gridSz==='small'?'S':gridSz==='medium'?'M':'L'),h('button',{onClick:function(){sShSort(true)},style:{color:'var(--text2)',marginRight:4}},h(Ic,{name:'sort',size:22})),h('button',{onClick:function(){sGrp(!grp)},style:{color:'var(--text2)'}},h(Ic,{name:grp?'grid':'folder',size:22}))),
+    h('div',{style:topBar},h('div',{style:{fontFamily:'var(--serif)',fontSize:26,flex:1}},'All Recipes',h('span',{style:{fontSize:14,fontWeight:500,color:'var(--text2)',marginLeft:8}},sorted.length)),h('button',{onClick:cycleGrid,style:{color:'var(--text2)',marginRight:4,fontSize:11,fontWeight:700,padding:'4px 8px',borderRadius:6,background:'var(--bg)',border:'1px solid var(--brd)'}},gridSz==='small'?'S':gridSz==='medium'?'M':'L'),h('button',{onClick:function(){sShSort(true)},style:{color:'var(--text2)',marginRight:4}},h(Ic,{name:'sort',size:22})),h('button',{onClick:function(){sGrp(!grp)},style:{color:'var(--text2)'}},h(Ic,{name:grp?'grid':'folder',size:22}))),
     h('div',{style:Object.assign({},scr,{paddingBottom:'calc(var(--sb) + 80px)'})},
       h('div',{style:{padding:'0 16px 8px',position:'relative'}},h('div',{style:{position:'absolute',left:28,top:12,pointerEvents:'none'}},h(Ic,{name:'search',size:18,color:'var(--text2)'})),h('input',{value:sr,onChange:function(e){sSr(e.target.value)},placeholder:'Search recipes...',style:Object.assign({},inp,{paddingLeft:42})})),
       h('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'0 16px 10px',flexWrap:'wrap'}},
@@ -568,9 +575,10 @@ function SDet(p){
   // Load diary images to include in carousel
   var _diaryImgs=us([]),diaryImgs=_diaryImgs[0],sDiaryImgs=_diaryImgs[1];
   ue(function(){D.getDiary(recipe.id).then(function(entries){var di=[];entries.forEach(function(e){if(e.image){var recImgs=recipe.images||[];var alreadyIn=recImgs.indexOf(e.image)!==-1;if(!alreadyIn&&di.indexOf(e.image)===-1)di.push(e.image)}});sDiaryImgs(di)})},[recipe.id]);
-  var imgs=(recipe.images||[]).slice();var yt=ytT(recipe.youtubeUrl);if(yt&&imgs.indexOf(yt)===-1)imgs.push(yt);
+  var imgs=(recipe.images||[]).filter(function(im){return im&&im.length>5}).slice();
+  var yt=ytT(recipe.youtubeUrl);if(yt){var ytVid=ytId(recipe.youtubeUrl);var hasSameYt=imgs.some(function(im){return im.indexOf('img.youtube.com')!==-1&&ytVid&&im.indexOf(ytVid)!==-1});if(!hasSameYt)imgs.push(yt)}
   // Append diary images (deduplicated)
-  diaryImgs.forEach(function(di){if(imgs.indexOf(di)===-1)imgs.push(di)});
+  diaryImgs.forEach(function(di){if(di&&imgs.indexOf(di)===-1)imgs.push(di)});
   var hasN=recipe.calories!=null||recipe.protein!=null||recipe.carbs!=null||recipe.fat!=null;
   var steps=[];if(recipe.instructions){steps=Array.isArray(recipe.instructions)?recipe.instructions:recipe.instructions.split('\n').filter(function(s){return s.trim()})}
   var hb=imgs.length>0;var tX=ur(0);
