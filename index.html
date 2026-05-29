@@ -52,7 +52,7 @@ function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 function parseAmt(s){if(!s)return null;s=s.trim();var fracs={'\u00BD':0.5,'\u00BC':0.25,'\u00BE':0.75,'\u2153':0.333,'\u2154':0.667};if(fracs[s])return fracs[s];var n=parseFloat(s);return isNaN(n)?null:n}
 function fmtAmt(n){if(n==null)return'';if(n===Math.floor(n))return''+n;return n%1>0.01?n.toFixed(1).replace(/\.0$/,''):''+Math.round(n)}
-var APP_VERSION='0.968';
+var APP_VERSION='0.971';
 // CORS proxy with fallback
 async function corsGet(targetUrl){
   // Try allorigins first (supports HTML, wraps in JSON)
@@ -303,14 +303,24 @@ async function fetchYT(url,cb){
   var geminiKey=await getGeminiKey();
   if(!geminiKey){if(cb)cb('Got title & thumbnail');return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'}}
   if(cb)cb('Gemini analyzing video...');
+  var geminiBody=JSON.stringify({contents:[{parts:[
+    {fileData:{mimeType:'video/*',fileUri:ytUrl}},
+    {text:'Analyze this YouTube video to extract a recipe. Use ALL available information: the video description (which often has exact measurements and instructions), the spoken audio, any on-screen text, and visual cooking steps. If the description contains a written recipe, prioritize those exact measurements.\n\nIMPORTANT: If the recipe has distinct components (e.g. sauce, dough, filling, marinade, topping, glaze, garnish), split them into sections. Use section headers like "--- Dough ---" or "--- Sauce ---" as separate items in the ingredients array (with empty amount and unit), and use step prefixes like "DOUGH: " or "SAUCE: " in the instructions to group them.\n\nReturn ONLY valid JSON with no other text:\n{"name":"Recipe name","servings":4,"ingredients":[{"amount":"","unit":"","name":"--- Dough ---"},{"amount":"200","unit":"g","name":"flour"},{"amount":"","unit":"","name":"--- Sauce ---"},{"amount":"100","unit":"ml","name":"cream"}],"instructions":["DOUGH: Mix flour and water.","DOUGH: Knead for 5 minutes.","SAUCE: Heat cream in a pan."],"calories":400,"protein":25,"carbs":50,"fat":15}\n\nRules: metric units only (g, kg, ml, L). amount must be a string. instructions as array of clear steps. Nutrition per serving as integers or null if unknown. Only use section headers if there are clearly distinct components.'}
+  ]}]});
   try{
-    var resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+geminiKey,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({contents:[{parts:[
-        {fileData:{mimeType:'video/*',fileUri:ytUrl}},
-        {text:'Analyze this YouTube video to extract a recipe. Use ALL available information: the video description (which often has exact measurements and instructions), the spoken audio, any on-screen text, and visual cooking steps. If the description contains a written recipe, prioritize those exact measurements.\n\nIMPORTANT: If the recipe has distinct components (e.g. sauce, dough, filling, marinade, topping, glaze, garnish), split them into sections. Use section headers like "--- Dough ---" or "--- Sauce ---" as separate items in the ingredients array (with empty amount and unit), and use step prefixes like "DOUGH: " or "SAUCE: " in the instructions to group them.\n\nReturn ONLY valid JSON with no other text:\n{"name":"Recipe name","servings":4,"ingredients":[{"amount":"","unit":"","name":"--- Dough ---"},{"amount":"200","unit":"g","name":"flour"},{"amount":"","unit":"","name":"--- Sauce ---"},{"amount":"100","unit":"ml","name":"cream"}],"instructions":["DOUGH: Mix flour and water.","DOUGH: Knead for 5 minutes.","SAUCE: Heat cream in a pan."],"calories":400,"protein":25,"carbs":50,"fat":15}\n\nRules: metric units only (g, kg, ml, L). amount must be a string. instructions as array of clear steps. Nutrition per serving as integers or null if unknown. Only use section headers if there are clearly distinct components.'}
-      ]}]})
-    });
+    var resp=null;var attempts=0;var maxAttempts=4;
+    while(attempts<maxAttempts){
+      resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+geminiKey,{
+        method:'POST',headers:{'Content-Type':'application/json'},body:geminiBody
+      });
+      if(resp.ok)break;
+      // 503 = high demand, 429 = rate limit: retry with backoff
+      if(resp.status===503||resp.status===429){
+        attempts++;
+        if(attempts<maxAttempts){var waitMs=1000*Math.pow(2,attempts-1);if(cb)cb('Gemini busy, retrying in '+(waitMs/1000)+'s...');await new Promise(function(r){setTimeout(r,waitMs)});continue}
+      }
+      break;
+    }
     if(resp.ok){
       var data=await resp.json();
       var txt='';if(data.candidates&&data.candidates[0]&&data.candidates[0].content&&data.candidates[0].content.parts){txt=data.candidates[0].content.parts.map(function(p){return p.text||''}).join('')}
@@ -318,6 +328,7 @@ async function fetchYT(url,cb){
       var p=JSON.parse(clean);
       return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories||null,protein:p.protein||null,carbs:p.carbs||null,fat:p.fat||null,thumbnail:thumb,mode:'ai'}
     }else{var et=await resp.text();console.log('Gemini err:',resp.status,et);
+      if(resp.status===503){if(cb)cb('');alert('Gemini is experiencing high demand right now. Please try again in a minute.')}
       // Fallback: try with Anthropic if available
       var apiKey=await getApiKey();
       if(apiKey){if(cb)cb('Gemini failed, trying Claude...');return await fetchYT_claude(vid,title,thumb,apiKey,cb)}
@@ -336,7 +347,7 @@ async function fetchYT_claude(vid,title,thumb,apiKey,cb){
   if(cb)cb('AI extracting recipe...');
   var ctx='Title: "'+(title||'Unknown')+'"\n'+(transcript?'Transcript:\n'+transcript+'\n':'No transcript available. Provide the standard recipe for this dish.\n');
   try{
-    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,messages:[{role:'user',content:ctx+'\nReturn ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null.'}]})});
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:2000,messages:[{role:'user',content:ctx+'\nReturn ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric only. Nutrition per serving integers or null.'}]})});
     if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories,protein:p.protein,carbs:p.carbs,fat:p.fat,thumbnail:thumb,mode:'ai'}}
   }catch(e){}
   return{name:title||'Recipe',servings:4,ingredients:[],instructions:[],calories:null,protein:null,carbs:null,fat:null,thumbnail:thumb,mode:'basic'};
@@ -346,12 +357,29 @@ async function scanMeal(imgData,comment){
   var apiKey=await getApiKey();if(!apiKey)return{error:'Add API key in Settings'};
   var b64=imgData.split(',')[1],mt=imgData.match(/data:(.*?);/)[1];
   try{
-    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:mt,data:b64}},{type:'text',text:'Estimate nutrition for this meal.'+(comment?' Info: '+comment:'')+'\nReturn ONLY JSON: {"description":"...","calories":500,"protein":30,"carbs":60,"fat":20,"confidence":"medium"}'}]}]})});
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:500,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:mt,data:b64}},{type:'text',text:'Estimate nutrition for this meal.'+(comment?' Info: '+comment:'')+'\nReturn ONLY JSON: {"description":"...","calories":500,"protein":30,"carbs":60,"fat":20,"confidence":"medium"}'}]}]})});
     if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');return JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim())}
     return{error:'API error '+resp.status}
   }catch(e){return{error:e.message}}
 }
-/* ===== WEBSITE EXTRACTION ===== */
+/* ===== RECIPE PHOTO EXTRACTION (cookbook pages) ===== */
+async function scanRecipePhoto(imgDataArr,cb){
+  var apiKey=await getApiKey();if(!apiKey)return{error:'Add Claude API key in Settings'};
+  if(cb)cb('Reading recipe...');
+  // Build content with all images
+  var content=[];
+  for(var i=0;i<imgDataArr.length;i++){
+    var im=imgDataArr[i];if(!im||!im.startsWith('data:'))continue;
+    var b64=im.split(',')[1],mt=im.match(/data:(.*?);/)[1];
+    content.push({type:'image',source:{type:'base64',media_type:mt,data:b64}});
+  }
+  content.push({type:'text',text:'These photo(s) show a recipe from a cookbook or recipe list. Extract the complete recipe exactly as written \u2014 do NOT invent or guess any ingredients or steps that are not shown.\n\nIf the recipe is in another language, TRANSLATE everything (name, ingredients, instructions) into English.\n\nIf the recipe has distinct components (e.g. sauce, dough, filling, marinade, topping), split them into sections. Use section headers like "--- Dough ---" as separate items in the ingredients array (empty amount and unit), and step prefixes like "DOUGH: " in the instructions.\n\nReturn ONLY valid JSON, no other text:\n{"name":"Recipe name","servings":4,"ingredients":[{"amount":"200","unit":"g","name":"flour"}],"instructions":["Step 1","Step 2"],"calories":400,"protein":25,"carbs":50,"fat":15,"hasPhoto":false}\n\nRules: metric units only (g, kg, ml, L). amount is a string (empty for section headers). Nutrition per serving as integers, or null if not shown in the photo (do NOT estimate). Set hasPhoto to true only if there is a clear finished-dish photo in the image.'});
+  try{
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-7',max_tokens:3000,messages:[{role:'user',content:content}]})});
+    if(resp.ok){var data=await resp.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());return{name:p.name||'Recipe',servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories||null,protein:p.protein||null,carbs:p.carbs||null,fat:p.fat||null,hasPhoto:p.hasPhoto||false,mode:'ai'}}
+    var et=await resp.text();console.log('Recipe photo err:',resp.status,et);return{error:'Extraction failed ('+resp.status+')'}
+  }catch(e){console.log('recipe photo fail',e);return{error:e.message}}
+}
 async function fetchWebsite(url,cb){
   var apiKey=await getApiKey();
   if(!apiKey)return{error:'Add API key in Settings to extract from websites'};
@@ -368,7 +396,7 @@ async function fetchWebsite(url,cb){
       if(cb)cb('AI extracting recipe...');
       try{
         var prompt='Website title: "'+title+'"\nPage content:\n'+text+'\n\nExtract the recipe. Return ONLY JSON:\n{"name":"...","servings":4,"ingredients":[{"amount":"100","unit":"g","name":"flour"}],"instructions":["Step 1"],"calories":400,"protein":25,"carbs":50,"fat":15}\nMetric units. Nutrition per serving integers or null.';
-        var ar=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,messages:[{role:'user',content:prompt}]})});
+        var ar=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:2000,messages:[{role:'user',content:prompt}]})});
         if(ar.ok){var data=await ar.json();var txt=data.content.map(function(b){return b.text||''}).join('');var p=JSON.parse(txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim());return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories,protein:p.protein,carbs:p.carbs,fat:p.fat,thumbnail:ogImg,mode:'ai'}}
         else return{name:title,thumbnail:ogImg,ingredients:[],instructions:[],mode:'basic'}
       }catch(e){return{name:title,thumbnail:ogImg,ingredients:[],instructions:[],mode:'basic'}}
@@ -646,7 +674,7 @@ function SForm(p){
   var _serv=us(ed?ed.servings||1:4),serv=_serv[0],sServ=_serv[1];
   var _gids=us(ed?rGids(ed):(p.preG?[p.preG]:[])),gids=_gids[0],sGids=_gids[1];
   var _busy=us(null),busy=_busy[0],sBusy=_busy[1];
-  var fRef=ur(null);
+  var fRef=ur(null);var rpRef=ur(null);
   async function addImg(e){var files=e.target.files;if(!files)return;for(var i=0;i<files.length;i++){var d=await f2d(files[i]);var resized=await resizeImg(d,1600);sImgs(function(prev){return prev.concat([resized])})}e.target.value=''}
   function rmImg(i){sImgs(function(prev){var a=prev.slice();a.splice(i,1);return a})}
   function addIng(){sIng(ing.concat([{amount:'',unit:'',name:''}]))}
@@ -658,6 +686,20 @@ function SForm(p){
   function togG(id){sGids(function(prev){return prev.indexOf(id)!==-1?prev.filter(function(x){return x!==id}):prev.concat([id])})}
   async function doFetchYT(){if(!yt.trim())return;sBusy('yt');var r=await fetchYT(yt.trim(),function(m){sBusy(m)});sBusy(null);if(r.error){alert(r.error);return}if(r.name&&!nm)sNm(r.name);if(r.ingredients&&r.ingredients.length)sIng(r.ingredients);if(r.instructions&&r.instructions.length)sInst(r.instructions);if(r.calories)sCal(r.calories);if(r.protein)sPro(r.protein);if(r.carbs)sCarb(r.carbs);if(r.fat)sFat(r.fat);if(r.servings)sServ(r.servings);if(r.thumbnail){var th=r.thumbnail;sImgs(function(prev){return prev.indexOf(th)===-1?prev.concat([th]):prev})}}
   async function doFetchWeb(){if(!web.trim())return;sBusy('web');var r=await fetchWebsite(web.trim(),function(m){sBusy(m)});sBusy(null);if(r.error){alert(r.error);return}if(r.name&&!nm)sNm(r.name);if(r.ingredients&&r.ingredients.length)sIng(r.ingredients);if(r.instructions&&r.instructions.length)sInst(r.instructions);if(r.calories)sCal(r.calories);if(r.protein)sPro(r.protein);if(r.carbs)sCarb(r.carbs);if(r.fat)sFat(r.fat);if(r.servings)sServ(r.servings);if(r.thumbnail){var th=r.thumbnail;sImgs(function(prev){return prev.indexOf(th)===-1?prev.concat([th]):prev})}}
+  async function doScanRecipePhoto(e){
+    var files=e.target.files;if(!files||!files.length)return;e.target.value='';
+    sBusy('Reading recipe photo...');
+    var arr=[];var resizedArr=[];
+    for(var i=0;i<files.length;i++){var d=await f2d(files[i]);arr.push(d);var rz=await resizeImg(d,1600);resizedArr.push(rz)}
+    var r=await scanRecipePhoto(arr,function(m){sBusy(m)});sBusy(null);
+    if(r.error){alert(r.error);return}
+    if(r.name&&!nm)sNm(r.name);
+    if(r.ingredients&&r.ingredients.length)sIng(r.ingredients);
+    if(r.instructions&&r.instructions.length)sInst(r.instructions);
+    if(r.calories)sCal(r.calories);if(r.protein)sPro(r.protein);if(r.carbs)sCarb(r.carbs);if(r.fat)sFat(r.fat);if(r.servings)sServ(r.servings);
+    // If the cookbook page has a finished-dish photo, add the (resized) photo as a recipe image/thumbnail
+    if(r.hasPhoto&&resizedArr.length){sImgs(function(prev){return prev.concat([resizedArr[0]])})}
+  }
   function save(){if(!nm.trim()){alert('Name required');return}var r={id:ed?ed.id:uid(),name:nm.trim(),genreIds:gids,genreId:null,images:imgs,youtubeUrl:yt.trim()||null,websiteUrl:web.trim()||null,instructions:inst.filter(function(s){return s.trim()}),calories:cal===''||cal==null?null:Number(cal),protein:pro===''||pro==null?null:Number(pro),carbs:carb===''||carb==null?null:Number(carb),fat:fat===''||fat==null?null:Number(fat),servings:Number(serv)||1,ingredients:ing.filter(function(x){return x.name.trim()}),coverIndex:ed?ed.coverIndex||0:0,hidden:ed?ed.hidden||false:false,rating:ed?ed.rating||0:0,createdAt:ed?ed.createdAt:Date.now(),updatedAt:Date.now()};D.saveRecipe(r);p.onBack()}
   var sec={background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16,marginBottom:12};
   return h('div',{style:{position:'absolute',inset:0,display:'flex',flexDirection:'column',background:'var(--bg)'}},
@@ -669,6 +711,7 @@ function SForm(p){
       h('div',{style:sec},h('div',{style:lbl},'PHOTOS'),h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}},imgs.map(function(im,i){return h('div',{key:i,style:{width:72,height:72,borderRadius:10,overflow:'hidden',position:'relative'}},h('img',{src:im,style:{width:'100%',height:'100%',objectFit:'cover'}}),h('button',{onClick:function(){rmImg(i)},style:{position:'absolute',top:2,right:2,width:22,height:22,borderRadius:11,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center'}},h(Ic,{name:'close',size:12,color:'#fff'})))})),h('button',{onClick:function(){fRef.current.click()},style:{padding:'10px 16px',borderRadius:10,border:'1px dashed var(--brd)',color:'var(--text2)',fontSize:14,display:'flex',alignItems:'center',gap:6}},h(Ic,{name:'image',size:16,color:'var(--text2)'}),'Add'),h('input',{ref:fRef,type:'file',accept:'image/*',multiple:true,onChange:addImg,style:{display:'none'}})),
       h('div',{style:sec},h('div',{style:lbl},'YOUTUBE URL'),h('div',{style:{display:'flex',gap:8}},h('input',{value:yt,onChange:function(e){sYt(e.target.value)},placeholder:'https://youtube.com/watch?v=...',style:Object.assign({},inp,{flex:1})}),h('button',{onClick:doFetchYT,disabled:!!busy,style:{padding:'10px 14px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:13,fontWeight:700,opacity:busy?0.6:1}},'\u2728'))),
       h('div',{style:sec},h('div',{style:lbl},'WEBSITE URL'),h('div',{style:{display:'flex',gap:8}},h('input',{value:web,onChange:function(e){sWeb(e.target.value)},placeholder:'https://recipe-site.com/...',style:Object.assign({},inp,{flex:1})}),h('button',{onClick:doFetchWeb,disabled:!!busy,style:{padding:'10px 14px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:13,fontWeight:700,opacity:busy?0.6:1}},'\u2728'))),
+      h('div',{style:sec},h('div',{style:lbl},'SCAN FROM COOKBOOK / PHOTO'),h('div',{style:{fontSize:12,color:'var(--text2)',marginBottom:10,lineHeight:1.4}},'Take a photo of a recipe from a cookbook or printed list. Extracts ingredients & instructions, translates if needed.'),h('button',{onClick:function(){rpRef.current.click()},disabled:!!busy,style:{width:'100%',padding:'12px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:14,fontWeight:600,display:'flex',alignItems:'center',justifyContent:'center',gap:8,opacity:busy?0.6:1}},h(Ic,{name:'camera',size:18,color:'#fff'}),' Scan Recipe Photo(s)'),h('input',{ref:rpRef,type:'file',accept:'image/*',multiple:true,onChange:doScanRecipePhoto,style:{display:'none'}})),
       h('div',{style:sec},h('div',{style:lbl},'SERVINGS'),h('input',{type:'number',value:serv,onChange:function(e){sServ(e.target.value)},min:1,style:Object.assign({},inp,{width:100})})),
       h('div',{style:sec},h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},h('div',{style:lbl},'INGREDIENTS'),h('button',{onClick:addIng,style:{color:'var(--pri)',fontSize:13,fontWeight:700,display:'flex',alignItems:'center',gap:4}},h(Ic,{name:'plus',size:14,color:'var(--pri)'}),' Add')),ing.map(function(x,i){return h('div',{key:i,style:{display:'flex',gap:6,marginBottom:8,alignItems:'center'}},h('input',{value:x.amount,onChange:function(e){updIng(i,'amount',e.target.value)},placeholder:'Amt',style:Object.assign({},inp,{width:60,padding:'8px'})}),h('input',{value:x.unit,onChange:function(e){updIng(i,'unit',e.target.value)},placeholder:'Unit',style:Object.assign({},inp,{width:52,padding:'8px'})}),h('input',{value:x.name,onChange:function(e){updIng(i,'name',e.target.value)},placeholder:'Ingredient',style:Object.assign({},inp,{flex:1,padding:'8px'})}),h('button',{onClick:function(){rmIng(i)},style:{padding:4}},h(Ic,{name:'close',size:16,color:'var(--text2)'})))})),
       h('div',{style:sec},h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},h('div',{style:lbl},'INSTRUCTIONS'),h('button',{onClick:addInst,style:{color:'var(--pri)',fontSize:13,fontWeight:700,display:'flex',alignItems:'center',gap:4}},h(Ic,{name:'plus',size:14,color:'var(--pri)'}),' Add')),inst.map(function(s,i){return h('div',{key:i,style:{display:'flex',gap:8,marginBottom:8,alignItems:'flex-start'}},h('div',{style:{width:24,height:24,borderRadius:12,background:'var(--pri)',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,flexShrink:0,marginTop:10}},i+1),h('textarea',{value:s,onChange:function(e){updInst(i,e.target.value)},rows:2,style:Object.assign({},inp,{flex:1,resize:'vertical',lineHeight:1.4,padding:'8px'})}),h('button',{onClick:function(){rmInst(i)},style:{padding:4,marginTop:10}},h(Ic,{name:'close',size:16,color:'var(--text2)'})))})),
@@ -773,7 +816,7 @@ function SSet(p){
     ),
 
     // ===== CLAUDE API KEY SECTION =====
-    h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16,marginBottom:12}},h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:4}},'WEBSITE & MEAL SCANNING (CLAUDE)'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Claude Sonnet analyzes website content and meal photos. Also used as fallback for YouTube if Gemini is unavailable.'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Get key: ',h('a',{href:'https://console.anthropic.com/settings/keys',target:'_blank',style:{color:'var(--pri)',fontWeight:600}},'console.anthropic.com')),
+    h('div',{style:{background:'var(--card)',borderRadius:16,border:'1px solid var(--brd)',padding:16,marginBottom:12}},h('div',{style:{fontSize:13,color:'var(--text2)',fontWeight:600,marginBottom:4}},'WEBSITE, COOKBOOK & MEAL SCANNING (CLAUDE)'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Claude analyzes website content, cookbook recipe photos (with translation), and meal photos. Also used as fallback for YouTube if Gemini is unavailable.'),h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:12,lineHeight:1.5}},'Get key: ',h('a',{href:'https://console.anthropic.com/settings/keys',target:'_blank',style:{color:'var(--pri)',fontWeight:600}},'console.anthropic.com')),
       akL?h('div',null,h('div',{style:{position:'relative',marginBottom:8}},h('input',{value:ak,onChange:function(e){sAk(e.target.value)},type:skv?'text':'password',placeholder:'sk-ant-...',style:Object.assign({},inp,{paddingRight:44})}),h('button',{onClick:function(){sSkv(!skv)},style:{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',color:'var(--text2)',fontSize:12}},skv?'Hide':'Show')),h('button',{onClick:saveKey,style:{padding:'10px',borderRadius:12,background:'var(--pri)',color:'#fff',fontSize:14,fontWeight:600,width:'100%'}},ak.trim()?'Save Key':'Remove Key'),akM?h('div',{style:{fontSize:13,color:'var(--grn)',marginTop:8,textAlign:'center'}},akM):null,h('div',{style:{fontSize:12,color:ak.trim()?'var(--grn)':'var(--text2)',marginTop:8}},ak.trim()?'\u2705 AI enabled':'\u274C Basic mode')):h('div',{className:'sp spd'})
     ),
 
