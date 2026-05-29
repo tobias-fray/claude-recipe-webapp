@@ -52,7 +52,7 @@ function f2d(f){return new Promise(function(ok){var r=new FileReader();r.onload=
 function fmtDate(ts){var d=new Date(ts);return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 function parseAmt(s){if(!s)return null;s=s.trim();var fracs={'\u00BD':0.5,'\u00BC':0.25,'\u00BE':0.75,'\u2153':0.333,'\u2154':0.667};if(fracs[s])return fracs[s];var n=parseFloat(s);return isNaN(n)?null:n}
 function fmtAmt(n){if(n==null)return'';if(n===Math.floor(n))return''+n;return n%1>0.01?n.toFixed(1).replace(/\.0$/,''):''+Math.round(n)}
-var APP_VERSION='0.971';
+var APP_VERSION='0.931';
 // CORS proxy with fallback
 async function corsGet(targetUrl){
   // Try allorigins first (supports HTML, wraps in JSON)
@@ -307,32 +307,38 @@ async function fetchYT(url,cb){
     {fileData:{mimeType:'video/*',fileUri:ytUrl}},
     {text:'Analyze this YouTube video to extract a recipe. Use ALL available information: the video description (which often has exact measurements and instructions), the spoken audio, any on-screen text, and visual cooking steps. If the description contains a written recipe, prioritize those exact measurements.\n\nIMPORTANT: If the recipe has distinct components (e.g. sauce, dough, filling, marinade, topping, glaze, garnish), split them into sections. Use section headers like "--- Dough ---" or "--- Sauce ---" as separate items in the ingredients array (with empty amount and unit), and use step prefixes like "DOUGH: " or "SAUCE: " in the instructions to group them.\n\nReturn ONLY valid JSON with no other text:\n{"name":"Recipe name","servings":4,"ingredients":[{"amount":"","unit":"","name":"--- Dough ---"},{"amount":"200","unit":"g","name":"flour"},{"amount":"","unit":"","name":"--- Sauce ---"},{"amount":"100","unit":"ml","name":"cream"}],"instructions":["DOUGH: Mix flour and water.","DOUGH: Knead for 5 minutes.","SAUCE: Heat cream in a pan."],"calories":400,"protein":25,"carbs":50,"fat":15}\n\nRules: metric units only (g, kg, ml, L). amount must be a string. instructions as array of clear steps. Nutrition per serving as integers or null if unknown. Only use section headers if there are clearly distinct components.'}
   ]}]});
+  // Try a chain of video-capable models. When one is overloaded (503) or rate-limited (429), fall through to the next.
+  var models=['gemini-2.5-flash','gemini-flash-latest','gemini-2.5-flash-lite','gemini-3.5-flash'];
+  var lastStatus=0;
   try{
-    var resp=null;var attempts=0;var maxAttempts=4;
-    while(attempts<maxAttempts){
-      resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+geminiKey,{
-        method:'POST',headers:{'Content-Type':'application/json'},body:geminiBody
-      });
-      if(resp.ok)break;
-      // 503 = high demand, 429 = rate limit: retry with backoff
-      if(resp.status===503||resp.status===429){
-        attempts++;
-        if(attempts<maxAttempts){var waitMs=1000*Math.pow(2,attempts-1);if(cb)cb('Gemini busy, retrying in '+(waitMs/1000)+'s...');await new Promise(function(r){setTimeout(r,waitMs)});continue}
+    for(var mi=0;mi<models.length;mi++){
+      var model=models[mi];
+      var attempts=0;var maxAttempts=2;var resp=null;
+      while(attempts<maxAttempts){
+        if(cb)cb('Analyzing with '+model.replace('gemini-','')+(mi>0?' (fallback)':'')+'...');
+        resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+geminiKey,{
+          method:'POST',headers:{'Content-Type':'application/json'},body:geminiBody
+        });
+        if(resp.ok)break;
+        lastStatus=resp.status;
+        if(resp.status===503||resp.status===429){
+          attempts++;
+          if(attempts<maxAttempts){if(cb)cb(model.replace('gemini-','')+' busy, retrying...');await new Promise(function(r){setTimeout(r,1200)});continue}
+        }
+        break; // non-retryable error or out of attempts → try next model
       }
-      break;
+      if(resp&&resp.ok){
+        var data=await resp.json();
+        var txt='';if(data.candidates&&data.candidates[0]&&data.candidates[0].content&&data.candidates[0].content.parts){txt=data.candidates[0].content.parts.map(function(p){return p.text||''}).join('')}
+        var clean=txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();
+        try{var p=JSON.parse(clean);return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories||null,protein:p.protein||null,carbs:p.carbs||null,fat:p.fat||null,thumbnail:thumb,mode:'ai'}}catch(pe){console.log('parse fail on '+model,pe);continue}
+      }else if(resp){var et=await resp.text();console.log('Gemini '+model+' err:',resp.status,et)}
     }
-    if(resp.ok){
-      var data=await resp.json();
-      var txt='';if(data.candidates&&data.candidates[0]&&data.candidates[0].content&&data.candidates[0].content.parts){txt=data.candidates[0].content.parts.map(function(p){return p.text||''}).join('')}
-      var clean=txt.replace(/```json\s*/g,'').replace(/```\s*/g,'').trim();
-      var p=JSON.parse(clean);
-      return{name:p.name||title,servings:p.servings||4,ingredients:p.ingredients||[],instructions:p.instructions||[],calories:p.calories||null,protein:p.protein||null,carbs:p.carbs||null,fat:p.fat||null,thumbnail:thumb,mode:'ai'}
-    }else{var et=await resp.text();console.log('Gemini err:',resp.status,et);
-      if(resp.status===503){if(cb)cb('');alert('Gemini is experiencing high demand right now. Please try again in a minute.')}
-      // Fallback: try with Anthropic if available
-      var apiKey=await getApiKey();
-      if(apiKey){if(cb)cb('Gemini failed, trying Claude...');return await fetchYT_claude(vid,title,thumb,apiKey,cb)}
-    }
+    // All Gemini models failed
+    console.log('All Gemini models failed, last status:',lastStatus);
+    if(lastStatus===503){if(cb)cb('');alert('All Gemini models are experiencing high demand right now. Please try again in a minute.')}
+    var apiKey=await getApiKey();
+    if(apiKey){if(cb)cb('Gemini unavailable, trying Claude...');return await fetchYT_claude(vid,title,thumb,apiKey,cb)}
   }catch(e){console.log('Gemini fail',e);
     var apiKey=await getApiKey();
     if(apiKey){if(cb)cb('Gemini failed, trying Claude...');return await fetchYT_claude(vid,title,thumb,apiKey,cb)}
